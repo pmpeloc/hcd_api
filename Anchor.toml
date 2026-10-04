@@ -1,19 +1,16 @@
 [toolchain]
 anchor_version = "1.2.0"
-solana_version = "1.18.26"
+solana_version = "3.1.10"
 
 [features]
 resolution = true
 skip-lint = false
 
-[programs.localnet]
-hcd = "Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS"
-
 [programs.devnet]
-hcd = "Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS"
+hcd = "8FNP6rs3DQ4h6bqWNeD9meHt5mUNEhcaXbrbJxSJniyd"
 
-[registry]
-url = "https://api.apr.dev"
+[programs.localnet]
+hcd = "8FNP6rs3DQ4h6bqWNeD9meHt5mUNEhcaXbrbJxSJniyd"
 
 [provider]
 cluster = "devnet"
@@ -21,3 +18,5 @@ wallet = "~/.config/solana/id.json"
 
 [scripts]
 test = "npx ts-mocha -p ./tsconfig.anchor.json -t 1000000 tests/**/*.ts"
+
+[hooks]
