@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Anchor / Solana
+target/
+.anchor/
+test-ledger/
+.yarn/
+
+# Env - never commit secrets (see .env.example for the names)
+.env
+.env.*
+!.env.example
+
+# Logs / coverage
+*.log
+coverage/
+
+# OS
+.DS_Store
+Thumbs.db
