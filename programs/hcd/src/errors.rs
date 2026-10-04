@@ -26,4 +26,8 @@ pub enum HcdError {
     NotKeyService,
     #[msg("Numerical overflow.")]
     Overflow,
+    #[msg("Max grant duration must be greater than zero.")]
+    InvalidGrantDuration,
+    #[msg("A clinic's organization must be itself; a doctor's must be another account.")]
+    InvalidOrganization,
 }

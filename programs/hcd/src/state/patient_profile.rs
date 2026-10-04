@@ -11,3 +11,7 @@ pub struct PatientProfile {
     pub created_at: i64,
     pub bump: u8,
 }
+
+impl PatientProfile {
+    pub const SEED: &'static [u8] = b"patient";
+}

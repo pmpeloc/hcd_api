@@ -13,10 +13,10 @@ hcd = "8FNP6rs3DQ4h6bqWNeD9meHt5mUNEhcaXbrbJxSJniyd"
 hcd = "8FNP6rs3DQ4h6bqWNeD9meHt5mUNEhcaXbrbJxSJniyd"
 
 [provider]
-cluster = "devnet"
+cluster = "localnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]
-test = "npx ts-mocha -p ./tsconfig.anchor.json -t 1000000 tests/**/*.ts"
+test = "node --test tests/*.test.mts"
 
 [hooks]
