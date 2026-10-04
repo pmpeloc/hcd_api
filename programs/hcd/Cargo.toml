@@ -15,6 +15,10 @@ no-log-ix-name = []
 cpi = ["no-entrypoint"]
 default = []
 idl-build = ["anchor-lang/idl-build"]
+# Declared so Anchor's macros don't raise `unexpected cfg` warnings.
+anchor-debug = []
+custom-heap = []
+custom-panic = []
 
 [dependencies]
 anchor-lang = "1.2.0"

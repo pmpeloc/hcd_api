@@ -24,6 +24,10 @@ pub struct Record {
     pub bump: u8,
 }
 
+impl Record {
+    pub const SEED: &'static [u8] = b"record";
+}
+
 /// Active when issued. The patient can dispute it ("not mine"); the issuer can
 /// void a disputed record and re-issue a new one. Nothing edits a record.
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace)]

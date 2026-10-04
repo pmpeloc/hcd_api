@@ -21,8 +21,12 @@ pub mod hcd {
         instructions::initialize_config::handler(ctx, key_service, max_grant_duration_secs)
     }
 
-    pub fn register_provider(ctx: Context<RegisterProvider>) -> Result<()> {
-        instructions::register_provider::handler(ctx)
+    pub fn register_provider(
+        ctx: Context<RegisterProvider>,
+        provider_type: state::ProviderType,
+        organization: Pubkey,
+    ) -> Result<()> {
+        instructions::register_provider::handler(ctx, provider_type, organization)
     }
 
     pub fn set_provider_verified(
