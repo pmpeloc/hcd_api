@@ -1,0 +1,21 @@
+pub mod dispute_record;
+pub mod grant_access;
+pub mod initialize_config;
+pub mod issue_record;
+pub mod log_access;
+pub mod register_patient;
+pub mod register_provider;
+pub mod revoke_access;
+pub mod set_provider_verified;
+pub mod void_record;
+
+pub use dispute_record::*;
+pub use grant_access::*;
+pub use initialize_config::*;
+pub use issue_record::*;
+pub use log_access::*;
+pub use register_patient::*;
+pub use register_provider::*;
+pub use revoke_access::*;
+pub use set_provider_verified::*;
+pub use void_record::*;
