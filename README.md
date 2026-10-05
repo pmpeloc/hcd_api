@@ -35,6 +35,7 @@ npm test               # Jest unit tests (src/**/*.spec.ts)
 npm run lint           # ESLint + Prettier
 npm run anchor:build   # build the program (WSL)
 npm run anchor:test    # run tests/ against a local validator
+npm run anchor:test:devnet  # same tests against the deployed devnet program
 npm run anchor:deploy  # deploy to devnet
 ```
 
@@ -53,6 +54,13 @@ npm run anchor:deploy  # deploy to devnet
 The Config was created once with
 `node scripts/initialize-config.mts <key_service_pubkey> <max_grant_days>`
 (WSL, upgrade authority wallet). It cannot be changed or created again.
+
+`npm run anchor:test:devnet` runs the same suite against the deployed
+program without redeploying (~0.07 SOL per run from the upgrade authority
+wallet). It reads `KEY_SERVICE_SECRET` (the Config's `key_service` must sign
+`issue_record` and `log_access`) and `SOLANA_RPC_URL` (must be a devnet RPC;
+the public one is flaky) from `.env`. The tests that create the Config are
+skipped there because it already exists.
 
 Upgrading needs the upgrade authority wallet with enough devnet SOL: a
 temporary buffer the size of `target/deploy/hcd.so` (~1.6 SOL for 314 KB,

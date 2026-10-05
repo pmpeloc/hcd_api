@@ -18,6 +18,7 @@
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "anchor:build": "anchor build",
     "anchor:test": "anchor test",
+    "anchor:test:devnet": "anchor test --skip-build --skip-deploy --provider.cluster devnet",
     "anchor:deploy": "anchor program deploy --provider.cluster devnet"
   },
   "dependencies": {
