@@ -354,3 +354,188 @@ describe('issue_record / dispute_record / void_record', () => {
     assert.ok(r.supersedes.equals(recordPda(patient.publicKey, 0)));
   });
 });
+
+describe('grant_access / revoke_access / log_access', () => {
+  const clinic = Keypair.generate();
+  const doctor = Keypair.generate();
+  const unverified = Keypair.generate();
+  const patient = Keypair.generate();
+  const grantPda = (record: web3.PublicKey, doc: web3.PublicKey) =>
+    pda(Buffer.from('grant'), record.toBuffer(), doc.toBuffer());
+  const record0 = recordPda(patient.publicKey, 0);
+  const record1 = recordPda(patient.publicKey, 1);
+
+  const chainNow = async () => {
+    const slot = await provider.connection.getSlot('confirmed');
+    return (await provider.connection.getBlockTime(slot))!;
+  };
+
+  const issue = (recordId: number) =>
+    program.methods
+      .issueRecord(Array(32).fill(1), `obj_${recordId}`)
+      .accountsPartial({
+        payer: admin,
+        issuer: doctor.publicKey,
+        keyService: keyService.publicKey,
+        config: configPda,
+        issuerProvider: providerPda(doctor.publicKey),
+        patientProfile: patientPda(patient.publicKey),
+        record: recordPda(patient.publicKey, recordId),
+        supersededRecord: null,
+      })
+      .signers([doctor, keyService])
+      .rpc();
+
+  const grant = async (opts: {
+    signer?: web3.Keypair;
+    doc?: web3.Keypair;
+    record?: web3.PublicKey;
+    expiresIn?: number;
+  } = {}) => {
+    const signer = opts.signer ?? patient;
+    const doc = opts.doc ?? doctor;
+    const record = opts.record ?? record0;
+    const expiresAt = (await chainNow()) + (opts.expiresIn ?? ONE_DAY);
+    return program.methods
+      .grantAccess(doc.publicKey, new BN(expiresAt))
+      .accountsPartial({
+        payer: admin,
+        patient: signer.publicKey,
+        config: configPda,
+        record,
+        doctorProvider: providerPda(doc.publicKey),
+        grant: grantPda(record, doc.publicKey),
+      })
+      .signers([signer])
+      .rpc();
+  };
+
+  const revoke = (signer: web3.Keypair) =>
+    program.methods
+      .revokeAccess()
+      .accountsPartial({ patient: signer.publicKey, grant: grantPda(record0, doctor.publicKey) })
+      .signers([signer])
+      .rpc();
+
+  const logAccess = (opts: { signer?: web3.Keypair; record?: web3.PublicKey } = {}) => {
+    const signer = opts.signer ?? keyService;
+    const record = opts.record ?? record0;
+    return program.methods
+      .logAccess()
+      .accountsPartial({
+        keyService: signer.publicKey,
+        config: configPda,
+        grant: grantPda(record, doctor.publicKey),
+        record,
+        doctorProvider: providerPda(doctor.publicKey),
+      })
+      .signers([signer])
+      .rpc();
+  };
+
+  const fetchGrant = (record = record0) =>
+    program.account.accessGrant.fetch(grantPda(record, doctor.publicKey));
+
+  before(async () => {
+    await registerProvider(clinic, { clinic: {} }, clinic.publicKey);
+    await registerProvider(doctor, { doctor: {} }, clinic.publicKey);
+    await registerProvider(unverified, { doctor: {} }, clinic.publicKey);
+    await setVerified(null, doctor.publicKey, true);
+    await registerPatient(patient);
+    await issue(0);
+    await issue(1);
+  });
+
+  it('rejects a grant signed by anyone but the patient', async () => {
+    await expectError(grant({ signer: doctor }), 'Unauthorized');
+  });
+
+  it('rejects an expiration in the past', async () => {
+    await expectError(grant({ expiresIn: -60 }), 'InvalidExpiration');
+  });
+
+  it('rejects an expiration beyond the configured maximum', async () => {
+    await expectError(grant({ expiresIn: 8 * ONE_DAY }), 'ExpirationTooLong');
+  });
+
+  it('rejects a grant to an unverified doctor', async () => {
+    await expectError(grant({ doc: unverified }), 'ProviderNotVerified');
+  });
+
+  it('rejects a grant to a clinic', async () => {
+    await setVerified(null, clinic.publicKey, true);
+    await expectError(grant({ doc: clinic }), 'NotADoctor');
+  });
+
+  it('grants access with the sponsor as rent payer', async () => {
+    await grant();
+    const g = await fetchGrant();
+    assert.ok(g.patient.equals(patient.publicKey));
+    assert.ok(g.doctor.equals(doctor.publicKey));
+    assert.ok(g.record.equals(record0));
+    assert.deepEqual(g.status, { active: {} });
+    assert.equal(g.accessCount.toNumber(), 0);
+    assert.ok(g.rentPayer.equals(admin));
+    assert.equal(await provider.connection.getBalance(patient.publicKey), 0);
+  });
+
+  it('rejects a log from anyone but the key service', async () => {
+    await expectError(logAccess({ signer: doctor }), 'NotKeyService');
+  });
+
+  it('logs each access and increments access_count', async () => {
+    await logAccess();
+    await logAccess();
+    assert.equal((await fetchGrant()).accessCount.toNumber(), 2);
+  });
+
+  it('rejects a log while the doctor is suspended', async () => {
+    await setVerified(null, doctor.publicKey, false);
+    await expectError(logAccess(), 'ProviderNotVerified');
+    await setVerified(null, doctor.publicKey, true);
+  });
+
+  it('rejects a revoke from anyone but the patient', async () => {
+    await expectError(revoke(doctor), 'Unauthorized');
+  });
+
+  it('revokes without closing the account and blocks further logs', async () => {
+    await revoke(patient);
+    const g = await fetchGrant();
+    assert.deepEqual(g.status, { revoked: {} });
+    assert.equal(g.accessCount.toNumber(), 2);
+    await expectError(logAccess(), 'GrantNotActive');
+    await expectError(revoke(patient), 'GrantNotActive');
+  });
+
+  it('re-grants the same account and keeps access_count', async () => {
+    await grant();
+    await logAccess();
+    const g = await fetchGrant();
+    assert.deepEqual(g.status, { active: {} });
+    assert.equal(g.accessCount.toNumber(), 3);
+  });
+
+  it('rejects a log once the grant has expired', async () => {
+    await grant({ expiresIn: 2 });
+    const expiresAt = (await fetchGrant()).expiresAt.toNumber();
+    // surfpool only produces a block per transaction: send one each round so
+    // the on-chain clock moves forward.
+    while ((await chainNow()) <= expiresAt) {
+      await new Promise((r) => setTimeout(r, 500));
+      await funded();
+    }
+    await expectError(logAccess(), 'GrantExpired');
+  });
+
+  it('rejects a log on a disputed record', async () => {
+    await grant({ record: record1 });
+    await program.methods
+      .disputeRecord()
+      .accountsPartial({ patient: patient.publicKey, record: record1 })
+      .signers([patient])
+      .rpc();
+    await expectError(logAccess({ record: record1 }), 'RecordDisputed');
+    await expectError(grant({ record: record1 }), 'RecordNotActive');
+  });
+});

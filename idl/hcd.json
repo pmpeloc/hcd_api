@@ -1,0 +1,1490 @@
+{
+  "address": "8FNP6rs3DQ4h6bqWNeD9meHt5mUNEhcaXbrbJxSJniyd",
+  "metadata": {
+    "name": "hcd",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Salua - patient-owned health records on Solana"
+  },
+  "instructions": [
+    {
+      "name": "dispute_record",
+      "discriminator": [
+        13,
+        152,
+        212,
+        19,
+        217,
+        215,
+        60,
+        32
+      ],
+      "accounts": [
+        {
+          "name": "patient",
+          "signer": true,
+          "relations": [
+            "record"
+          ]
+        },
+        {
+          "name": "record",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  99,
+                  111,
+                  114,
+                  100
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "record.patient",
+                "account": "Record"
+              },
+              {
+                "kind": "account",
+                "path": "record.record_id",
+                "account": "Record"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "grant_access",
+      "discriminator": [
+        66,
+        88,
+        87,
+        113,
+        39,
+        22,
+        27,
+        165
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "docs": [
+            "Pays the rent: the backend fee payer, so patients never need SOL."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "patient",
+          "signer": true,
+          "relations": [
+            "record"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "record",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  99,
+                  111,
+                  114,
+                  100
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "record.patient",
+                "account": "Record"
+              },
+              {
+                "kind": "account",
+                "path": "record.record_id",
+                "account": "Record"
+              }
+            ]
+          }
+        },
+        {
+          "name": "doctor_provider",
+          "docs": [
+            "Access can only be granted to a verified doctor."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  118,
+                  105,
+                  100,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "doctor"
+              }
+            ]
+          }
+        },
+        {
+          "name": "grant",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  103,
+                  114,
+                  97,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "record"
+              },
+              {
+                "kind": "arg",
+                "path": "doctor"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "doctor",
+          "type": "pubkey"
+        },
+        {
+          "name": "expires_at",
+          "type": "i64"
+        }
+      ]
+    },
+    {
+      "name": "initialize_config",
+      "discriminator": [
+        208,
+        127,
+        21,
+        1,
+        194,
+        190,
+        196,
+        70
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "program",
+          "address": "8FNP6rs3DQ4h6bqWNeD9meHt5mUNEhcaXbrbJxSJniyd"
+        },
+        {
+          "name": "program_data"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "key_service",
+          "type": "pubkey"
+        },
+        {
+          "name": "max_grant_duration_secs",
+          "type": "i64"
+        }
+      ]
+    },
+    {
+      "name": "issue_record",
+      "discriminator": [
+        52,
+        77,
+        222,
+        95,
+        135,
+        154,
+        65,
+        82
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "docs": [
+            "Pays the rent: the backend fee payer. Stored as `rent_payer`."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "issuer",
+          "signer": true
+        },
+        {
+          "name": "key_service",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "issuer_provider",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  118,
+                  105,
+                  100,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "issuer"
+              }
+            ]
+          }
+        },
+        {
+          "name": "patient_profile",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  97,
+                  116,
+                  105,
+                  101,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "patient_profile.authority",
+                "account": "PatientProfile"
+              }
+            ]
+          }
+        },
+        {
+          "name": "record",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  99,
+                  111,
+                  114,
+                  100
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "patient_profile.authority",
+                "account": "PatientProfile"
+              },
+              {
+                "kind": "account",
+                "path": "patient_profile.next_record_id",
+                "account": "PatientProfile"
+              }
+            ]
+          }
+        },
+        {
+          "name": "superseded_record",
+          "docs": [
+            "Only for a re-issue: the voided record this one replaces. It must be",
+            "voided and belong to the same patient and issuer."
+          ],
+          "optional": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "content_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "storage_ref",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "name": "log_access",
+      "discriminator": [
+        196,
+        55,
+        194,
+        24,
+        5,
+        224,
+        161,
+        204
+      ],
+      "accounts": [
+        {
+          "name": "key_service",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "grant",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  103,
+                  114,
+                  97,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "grant.record",
+                "account": "AccessGrant"
+              },
+              {
+                "kind": "account",
+                "path": "grant.doctor",
+                "account": "AccessGrant"
+              }
+            ]
+          }
+        },
+        {
+          "name": "record"
+        },
+        {
+          "name": "doctor_provider",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  118,
+                  105,
+                  100,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "grant.doctor",
+                "account": "AccessGrant"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "register_patient",
+      "discriminator": [
+        28,
+        119,
+        184,
+        101,
+        140,
+        117,
+        47,
+        183
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "docs": [
+            "Pays the rent: the backend fee payer, so patients never need SOL."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "patient_profile",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  97,
+                  116,
+                  105,
+                  101,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "authority"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "register_provider",
+      "discriminator": [
+        254,
+        209,
+        54,
+        184,
+        46,
+        197,
+        109,
+        78
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "docs": [
+            "Pays the rent: the backend fee payer, so providers never need SOL."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "provider",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  118,
+                  105,
+                  100,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "authority"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "provider_type",
+          "type": {
+            "defined": {
+              "name": "ProviderType"
+            }
+          }
+        },
+        {
+          "name": "organization",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "revoke_access",
+      "discriminator": [
+        106,
+        128,
+        38,
+        169,
+        103,
+        238,
+        102,
+        147
+      ],
+      "accounts": [
+        {
+          "name": "patient",
+          "signer": true,
+          "relations": [
+            "grant"
+          ]
+        },
+        {
+          "name": "grant",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  103,
+                  114,
+                  97,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "grant.record",
+                "account": "AccessGrant"
+              },
+              {
+                "kind": "account",
+                "path": "grant.doctor",
+                "account": "AccessGrant"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "set_provider_verified",
+      "discriminator": [
+        29,
+        55,
+        229,
+        194,
+        171,
+        195,
+        172,
+        236
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "provider",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  118,
+                  105,
+                  100,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "provider.authority",
+                "account": "Provider"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "verified",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "void_record",
+      "discriminator": [
+        186,
+        15,
+        25,
+        32,
+        231,
+        207,
+        87,
+        174
+      ],
+      "accounts": [
+        {
+          "name": "issuer",
+          "signer": true,
+          "relations": [
+            "record"
+          ]
+        },
+        {
+          "name": "record",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  99,
+                  111,
+                  114,
+                  100
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "record.patient",
+                "account": "Record"
+              },
+              {
+                "kind": "account",
+                "path": "record.record_id",
+                "account": "Record"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    }
+  ],
+  "accounts": [
+    {
+      "name": "AccessGrant",
+      "discriminator": [
+        167,
+        55,
+        184,
+        237,
+        74,
+        242,
+        0,
+        109
+      ]
+    },
+    {
+      "name": "Config",
+      "discriminator": [
+        155,
+        12,
+        170,
+        224,
+        30,
+        250,
+        204,
+        130
+      ]
+    },
+    {
+      "name": "PatientProfile",
+      "discriminator": [
+        60,
+        180,
+        145,
+        1,
+        222,
+        225,
+        60,
+        179
+      ]
+    },
+    {
+      "name": "Provider",
+      "discriminator": [
+        164,
+        180,
+        71,
+        17,
+        75,
+        216,
+        80,
+        195
+      ]
+    },
+    {
+      "name": "Record",
+      "discriminator": [
+        254,
+        233,
+        117,
+        252,
+        76,
+        166,
+        146,
+        139
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "AccessGranted",
+      "discriminator": [
+        21,
+        212,
+        83,
+        192,
+        198,
+        26,
+        62,
+        185
+      ]
+    },
+    {
+      "name": "AccessLogged",
+      "discriminator": [
+        243,
+        53,
+        225,
+        71,
+        64,
+        120,
+        109,
+        25
+      ]
+    },
+    {
+      "name": "AccessRevoked",
+      "discriminator": [
+        200,
+        160,
+        73,
+        43,
+        201,
+        165,
+        43,
+        159
+      ]
+    },
+    {
+      "name": "RecordDisputed",
+      "discriminator": [
+        9,
+        13,
+        166,
+        215,
+        26,
+        172,
+        50,
+        145
+      ]
+    },
+    {
+      "name": "RecordIssued",
+      "discriminator": [
+        44,
+        242,
+        204,
+        114,
+        101,
+        237,
+        254,
+        224
+      ]
+    },
+    {
+      "name": "RecordVoided",
+      "discriminator": [
+        79,
+        76,
+        13,
+        48,
+        9,
+        36,
+        98,
+        13
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "Unauthorized",
+      "msg": "Signer is not authorized for this action."
+    },
+    {
+      "code": 6001,
+      "name": "ProviderNotVerified",
+      "msg": "Provider is not verified."
+    },
+    {
+      "code": 6002,
+      "name": "RecordNotActive",
+      "msg": "Record is not active."
+    },
+    {
+      "code": 6003,
+      "name": "RecordDisputed",
+      "msg": "Record is disputed."
+    },
+    {
+      "code": 6004,
+      "name": "RecordVoided",
+      "msg": "Record is voided."
+    },
+    {
+      "code": 6005,
+      "name": "InvalidExpiration",
+      "msg": "Grant expiration must be in the future."
+    },
+    {
+      "code": 6006,
+      "name": "ExpirationTooLong",
+      "msg": "Grant expiration exceeds the configured maximum."
+    },
+    {
+      "code": 6007,
+      "name": "GrantNotActive",
+      "msg": "Access grant is not active."
+    },
+    {
+      "code": 6008,
+      "name": "GrantExpired",
+      "msg": "Access grant has expired."
+    },
+    {
+      "code": 6009,
+      "name": "NotKeyService",
+      "msg": "Signer is not the configured key service."
+    },
+    {
+      "code": 6010,
+      "name": "Overflow",
+      "msg": "Numerical overflow."
+    },
+    {
+      "code": 6011,
+      "name": "InvalidGrantDuration",
+      "msg": "Max grant duration must be greater than zero."
+    },
+    {
+      "code": 6012,
+      "name": "InvalidOrganization",
+      "msg": "A clinic's organization must be itself; a doctor's must be another account."
+    },
+    {
+      "code": 6013,
+      "name": "NotADoctor",
+      "msg": "Only a doctor can issue records."
+    },
+    {
+      "code": 6014,
+      "name": "InvalidStorageRef",
+      "msg": "Storage ref must be 1 to 64 bytes."
+    },
+    {
+      "code": 6015,
+      "name": "RecordNotVoided",
+      "msg": "Only a voided record can be superseded."
+    },
+    {
+      "code": 6016,
+      "name": "RecordNotDisputed",
+      "msg": "Only a disputed record can be voided."
+    }
+  ],
+  "types": [
+    {
+      "name": "AccessGrant",
+      "docs": [
+        "Time-bound permission for a doctor to read one record.",
+        "Seeds: [\"grant\", record, doctor]"
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "patient",
+            "type": "pubkey"
+          },
+          {
+            "name": "doctor",
+            "type": "pubkey"
+          },
+          {
+            "name": "record",
+            "type": "pubkey"
+          },
+          {
+            "name": "expires_at",
+            "docs": [
+              "Unix timestamp; checked against Clock, never against client input."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "status",
+            "type": {
+              "defined": {
+                "name": "GrantStatus"
+              }
+            }
+          },
+          {
+            "name": "access_count",
+            "docs": [
+              "Source of truth for the audit trail; only `log_access` increments it."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "rent_payer",
+            "docs": [
+              "Account that paid the rent; receives it back if the account is closed."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "AccessGranted",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "grant",
+            "type": "pubkey"
+          },
+          {
+            "name": "record",
+            "type": "pubkey"
+          },
+          {
+            "name": "patient",
+            "type": "pubkey"
+          },
+          {
+            "name": "doctor",
+            "type": "pubkey"
+          },
+          {
+            "name": "expires_at",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "AccessLogged",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "grant",
+            "type": "pubkey"
+          },
+          {
+            "name": "record",
+            "type": "pubkey"
+          },
+          {
+            "name": "doctor",
+            "type": "pubkey"
+          },
+          {
+            "name": "access_count",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "AccessRevoked",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "grant",
+            "type": "pubkey"
+          },
+          {
+            "name": "record",
+            "type": "pubkey"
+          },
+          {
+            "name": "patient",
+            "type": "pubkey"
+          },
+          {
+            "name": "doctor",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Config",
+      "docs": [
+        "Global program config. Seeds: [\"config\"]"
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "admin",
+            "docs": [
+              "Program authority; the only signer allowed to verify providers."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "key_service",
+            "docs": [
+              "Backend keypair allowed to call `log_access`. Different from the",
+              "fee payer on purpose."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "max_grant_duration_secs",
+            "docs": [
+              "Maximum lifetime of an AccessGrant, in seconds."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "GrantStatus",
+      "docs": [
+        "Revoked grants are kept (not closed) to preserve the audit trail. One PDA",
+        "per (record, doctor): granting again re-activates the same account with a",
+        "new expiration and keeps `access_count` (team decision, 2026-10-04)."
+      ],
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Active"
+          },
+          {
+            "name": "Revoked"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PatientProfile",
+      "docs": [
+        "Patient profile. Seeds: [\"patient\", authority]"
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "docs": [
+              "The patient's embedded wallet (Privy). No DNI is stored anywhere."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "next_record_id",
+            "docs": [
+              "Monotonic counter used as seed for each new Record."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "created_at",
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Provider",
+      "docs": [
+        "A clinic or a doctor registered in the program. Seeds: [\"provider\", authority]"
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "docs": [
+              "Wallet that controls this provider account."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "provider_type",
+            "type": {
+              "defined": {
+                "name": "ProviderType"
+              }
+            }
+          },
+          {
+            "name": "verified",
+            "docs": [
+              "Only the admin can set this to true (manual license check off-chain)."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "organization",
+            "docs": [
+              "Organization the provider belongs to. For a clinic: its own pubkey.",
+              "For a doctor: the clinic that endorses them (verified off-chain too)."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ProviderType",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Clinic"
+          },
+          {
+            "name": "Doctor"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Record",
+      "docs": [
+        "A health record issued by a verified doctor.",
+        "Seeds: [\"record\", patient, record_id.to_le_bytes()]"
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "patient",
+            "docs": [
+              "Patient this record belongs to (their authority pubkey)."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "issuer",
+            "docs": [
+              "Doctor who issued the record. The issuer can re-read it without a grant."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "record_id",
+            "type": "u64"
+          },
+          {
+            "name": "content_hash",
+            "docs": [
+              "SHA-256 of the encrypted file. Never medical data itself."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "storage_ref",
+            "docs": [
+              "Opaque pointer to the ciphertext in off-chain storage (no readable path)."
+            ],
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": {
+              "defined": {
+                "name": "RecordStatus"
+              }
+            }
+          },
+          {
+            "name": "created_at",
+            "type": "i64"
+          },
+          {
+            "name": "rent_payer",
+            "docs": [
+              "Account that paid the rent; receives it back if the account is closed."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "supersedes",
+            "docs": [
+              "When the issuer voids and re-issues a record, points to the voided one."
+            ],
+            "type": {
+              "option": "pubkey"
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RecordDisputed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "record",
+            "type": "pubkey"
+          },
+          {
+            "name": "patient",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RecordIssued",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "record",
+            "type": "pubkey"
+          },
+          {
+            "name": "patient",
+            "type": "pubkey"
+          },
+          {
+            "name": "issuer",
+            "type": "pubkey"
+          },
+          {
+            "name": "record_id",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RecordStatus",
+      "docs": [
+        "Active when issued. The patient can dispute it (\"not mine\"); the issuer can",
+        "void a disputed record and re-issue a new one. Nothing edits a record."
+      ],
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Active"
+          },
+          {
+            "name": "Disputed"
+          },
+          {
+            "name": "Voided"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RecordVoided",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "record",
+            "type": "pubkey"
+          },
+          {
+            "name": "issuer",
+            "type": "pubkey"
+          }
+        ]
+      }
+    }
+  ]
+}

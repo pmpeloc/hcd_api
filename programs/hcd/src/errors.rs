@@ -2,8 +2,6 @@ use anchor_lang::prelude::*;
 
 #[error_code]
 pub enum HcdError {
-    #[msg("Instruction not implemented yet.")]
-    Unimplemented,
     #[msg("Signer is not authorized for this action.")]
     Unauthorized,
     #[msg("Provider is not verified.")]

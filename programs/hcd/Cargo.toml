@@ -21,4 +21,5 @@ custom-heap = []
 custom-panic = []
 
 [dependencies]
-anchor-lang = "1.2.0"
+# init-if-needed: grant_access re-activates the same AccessGrant (decision 2026-10-04).
+anchor-lang = { version = "1.2.0", features = ["init-if-needed"] }
