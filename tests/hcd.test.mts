@@ -1,15 +1,32 @@
-// Anchor program tests. Run with `anchor test` (local validator).
+// Anchor program tests. Run with `anchor test` (local validator) or
+// `npm run anchor:test:devnet` (deployed program; the Config already exists
+// there, so key_service is read from KEY_SERVICE_SECRET in .env, and the RPC
+// from SOLANA_RPC_URL when set).
 // Uses node:test so no extra test dependencies are needed (Node 24 strips TS
 // types; .mts marks the file as an ES module).
 import { before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { parseEnv } from 'node:util';
 import anchor from '@anchor-lang/core'; // CommonJS package: no named ESM exports
 
-const { AnchorProvider, BN, Program, setProvider, web3 } = anchor;
-const { Keypair, PublicKey, LAMPORTS_PER_SOL } = web3;
+const { AnchorProvider, BN, Program, setProvider, utils, web3 } = anchor;
+const { ComputeBudgetProgram, Keypair, PublicKey, LAMPORTS_PER_SOL, SystemProgram, Transaction } =
+  web3;
 
-const provider = AnchorProvider.env();
+const envProvider = AnchorProvider.env();
+const onDevnet = !/localhost|127\.0\.0\.1/.test(envProvider.connection.rpcEndpoint);
+const dotenv = onDevnet ? parseEnv(readFileSync('.env', 'utf8')) : {};
+// The public devnet RPC is flaky (stale blockhashes, 429s): prefer the
+// project's RPC from .env, and never let it point at anything but devnet.
+const rpcUrl = dotenv.SOLANA_RPC_URL;
+if (rpcUrl) assert.match(new URL(rpcUrl).hostname, /devnet/, 'SOLANA_RPC_URL must be a devnet RPC');
+const provider = rpcUrl
+  ? new AnchorProvider(new web3.Connection(rpcUrl, 'confirmed'), envProvider.wallet, {
+      commitment: 'confirmed',
+      preflightCommitment: 'confirmed',
+    })
+  : envProvider;
 setProvider(provider);
 const idl = JSON.parse(readFileSync('target/idl/hcd.json', 'utf8'));
 const program = new Program(idl, provider);
@@ -31,7 +48,18 @@ const recordPda = (patient: web3.PublicKey, recordId: number) =>
   pda(Buffer.from('record'), patient.toBuffer(), new BN(recordId).toArrayLike(Buffer, 'le', 8));
 
 const ONE_DAY = 24 * 60 * 60;
-const keyService = Keypair.generate();
+// On devnet the Config is fixed, so tests must sign with its real key_service.
+const keyService = onDevnet ? loadKeyService() : Keypair.generate();
+
+function loadKeyService() {
+  const secret = dotenv.KEY_SERVICE_SECRET;
+  assert.ok(secret, 'KEY_SERVICE_SECRET missing in .env');
+  return Keypair.fromSecretKey(
+    secret.trim().startsWith('[')
+      ? Uint8Array.from(JSON.parse(secret))
+      : utils.bytes.bs58.decode(secret.trim()),
+  );
+}
 
 // Fails unless the promise rejects with an error that mentions `code`
 // (Anchor error code name or a runtime log line).
@@ -47,10 +75,19 @@ async function expectError(promise: Promise<unknown>, code: string) {
   });
 }
 
+// A transfer from the test wallet instead of an airdrop: devnet rate-limits
+// airdrops. 0.01 SOL covers the fees of a rejected transaction.
 async function funded() {
   const kp = Keypair.generate();
-  const sig = await provider.connection.requestAirdrop(kp.publicKey, LAMPORTS_PER_SOL);
-  await provider.connection.confirmTransaction(sig, 'confirmed');
+  await provider.sendAndConfirm(
+    new Transaction().add(
+      SystemProgram.transfer({
+        fromPubkey: admin,
+        toPubkey: kp.publicKey,
+        lamports: LAMPORTS_PER_SOL / 100,
+      }),
+    ),
+  );
   return kp;
 }
 
@@ -92,16 +129,25 @@ const registerPatient = (authority: web3.Keypair) =>
     .rpc();
 
 describe('initialize_config', () => {
-  it('rejects a signer that is not the upgrade authority', async () => {
+  const freshOnly = { skip: onDevnet && 'Config already exists on devnet' };
+
+  it('the devnet Config uses the key service in .env', { skip: !onDevnet }, async () => {
+    const config = await program.account.config.fetch(configPda);
+    assert.ok(config.admin.equals(admin));
+    assert.ok(config.keyService.equals(keyService.publicKey));
+    assert.equal(config.maxGrantDurationSecs.toNumber(), 7 * ONE_DAY);
+  });
+
+  it('rejects a signer that is not the upgrade authority', freshOnly, async () => {
     const intruder = await funded();
     await expectError(initializeConfig(intruder, 7 * ONE_DAY), 'Unauthorized');
   });
 
-  it('rejects a non-positive max grant duration', async () => {
+  it('rejects a non-positive max grant duration', freshOnly, async () => {
     await expectError(initializeConfig(null, 0), 'InvalidGrantDuration');
   });
 
-  it('lets the upgrade authority create the config', async () => {
+  it('lets the upgrade authority create the config', freshOnly, async () => {
     await initializeConfig(null, 7 * ONE_DAY);
     const config = await program.account.config.fetch(configPda);
     assert.ok(config.admin.equals(admin));
@@ -417,6 +463,10 @@ describe('grant_access / revoke_access / log_access', () => {
       .signers([signer])
       .rpc();
 
+  // Two log_access txs for the same grant are byte-identical when they share a
+  // blockhash, and the network drops the second as a duplicate (seen on
+  // devnet). A distinct compute unit limit per call makes each tx unique.
+  let logNonce = 0;
   const logAccess = (opts: { signer?: web3.Keypair; record?: web3.PublicKey } = {}) => {
     const signer = opts.signer ?? keyService;
     const record = opts.record ?? record0;
@@ -429,6 +479,7 @@ describe('grant_access / revoke_access / log_access', () => {
         record,
         doctorProvider: providerPda(doctor.publicKey),
       })
+      .preInstructions([ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 + ++logNonce })])
       .signers([signer])
       .rpc();
   };
@@ -483,6 +534,26 @@ describe('grant_access / revoke_access / log_access', () => {
     await expectError(logAccess({ signer: doctor }), 'NotKeyService');
   });
 
+  it('rejects a log for a verified doctor who was never granted access', async () => {
+    const stranger = Keypair.generate();
+    await registerProvider(stranger, { doctor: {} }, clinic.publicKey);
+    await setVerified(null, stranger.publicKey, true);
+    await expectError(
+      program.methods
+        .logAccess()
+        .accountsPartial({
+          keyService: keyService.publicKey,
+          config: configPda,
+          grant: grantPda(record0, stranger.publicKey),
+          record: record0,
+          doctorProvider: providerPda(stranger.publicKey),
+        })
+        .signers([keyService])
+        .rpc(),
+      'AccountNotInitialized',
+    );
+  });
+
   it('logs each access and increments access_count', async () => {
     await logAccess();
     await logAccess();
@@ -517,7 +588,10 @@ describe('grant_access / revoke_access / log_access', () => {
   });
 
   it('rejects a log once the grant has expired', async () => {
-    await grant({ expiresIn: 2 });
+    // 10 s, not less: chainNow() reads the last confirmed block, which on
+    // devnet lags the clock the grant executes with by a few seconds, and a
+    // shorter margin is already in the past on-chain (InvalidExpiration).
+    await grant({ expiresIn: 10 });
     const expiresAt = (await fetchGrant()).expiresAt.toNumber();
     // surfpool only produces a block per transaction: send one each round so
     // the on-chain clock moves forward.
