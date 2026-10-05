@@ -44,8 +44,15 @@ npm run anchor:deploy  # deploy to devnet
 |---|---|
 | Program ID | `8FNP6rs3DQ4h6bqWNeD9meHt5mUNEhcaXbrbJxSJniyd` |
 | Upgrade authority | `6AdUWfFLkpBCHNSsnCLKbEPB8khvGcnFHZczx6zjTdiQ` (also the Config admin) |
+| Config PDA | `7tChRt4bpCXD8PAsREFpW82i4qrxZwXnfqYYmv2p1EZA` |
+| `key_service` | `DmiHb7zTyWhaLtRCXhCTNkM8Ga1G2S36XzCUx1GUH4yG` |
+| Max grant duration | 7 days (604800 s) |
 | IDL | on-chain metadata account, identical to `idl/hcd.json` |
 | Explorer | https://explorer.solana.com/address/8FNP6rs3DQ4h6bqWNeD9meHt5mUNEhcaXbrbJxSJniyd?cluster=devnet |
+
+The Config was created once with
+`node scripts/initialize-config.mts <key_service_pubkey> <max_grant_days>`
+(WSL, upgrade authority wallet). It cannot be changed or created again.
 
 Upgrading needs the upgrade authority wallet with enough devnet SOL: a
 temporary buffer the size of `target/deploy/hcd.so` (~1.6 SOL for 314 KB,
