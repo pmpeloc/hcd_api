@@ -27,9 +27,11 @@ const providerPda = (authority: web3.PublicKey) =>
   pda(Buffer.from('provider'), authority.toBuffer());
 const patientPda = (authority: web3.PublicKey) =>
   pda(Buffer.from('patient'), authority.toBuffer());
+const recordPda = (patient: web3.PublicKey, recordId: number) =>
+  pda(Buffer.from('record'), patient.toBuffer(), new BN(recordId).toArrayLike(Buffer, 'le', 8));
 
 const ONE_DAY = 24 * 60 * 60;
-const keyService = Keypair.generate().publicKey;
+const keyService = Keypair.generate();
 
 // Fails unless the promise rejects with an error that mentions `code`
 // (Anchor error code name or a runtime log line).
@@ -54,7 +56,7 @@ async function funded() {
 
 const initializeConfig = (signer: web3.Keypair | null, maxSecs: number) => {
   const builder = program.methods
-    .initializeConfig(keyService, new BN(maxSecs))
+    .initializeConfig(keyService.publicKey, new BN(maxSecs))
     .accountsPartial({
       admin: signer?.publicKey ?? admin,
       config: configPda,
@@ -103,7 +105,7 @@ describe('initialize_config', () => {
     await initializeConfig(null, 7 * ONE_DAY);
     const config = await program.account.config.fetch(configPda);
     assert.ok(config.admin.equals(admin));
-    assert.ok(config.keyService.equals(keyService));
+    assert.ok(config.keyService.equals(keyService.publicKey));
     assert.equal(config.maxGrantDurationSecs.toNumber(), 7 * ONE_DAY);
   });
 
@@ -195,5 +197,160 @@ describe('register_patient', () => {
         .rpc(),
       /Signature verification failed|Missing signature|unknown signer/i,
     );
+  });
+});
+
+describe('issue_record / dispute_record / void_record', () => {
+  const clinic = Keypair.generate();
+  const doctor = Keypair.generate();
+  const unverified = Keypair.generate();
+  const patient = Keypair.generate();
+  const hash = Array.from({ length: 32 }, (_, i) => i);
+
+  // The admin wallet pays rent (stands in for the backend fee payer).
+  const issueRecord = (opts: {
+    issuer?: web3.Keypair;
+    keyServiceSigner?: web3.Keypair;
+    recordId?: number;
+    storageRef?: string;
+    supersedes?: web3.PublicKey | null;
+  } = {}) => {
+    const issuer = opts.issuer ?? doctor;
+    const ks = opts.keyServiceSigner ?? keyService;
+    return program.methods
+      .issueRecord(hash, opts.storageRef ?? 'obj_7f3a9c')
+      .accountsPartial({
+        payer: admin,
+        issuer: issuer.publicKey,
+        keyService: ks.publicKey,
+        config: configPda,
+        issuerProvider: providerPda(issuer.publicKey),
+        patientProfile: patientPda(patient.publicKey),
+        record: recordPda(patient.publicKey, opts.recordId ?? 0),
+        supersededRecord: opts.supersedes ?? null,
+      })
+      .signers([issuer, ks])
+      .rpc();
+  };
+
+  before(async () => {
+    await registerProvider(clinic, { clinic: {} }, clinic.publicKey);
+    await registerProvider(doctor, { doctor: {} }, clinic.publicKey);
+    await registerProvider(unverified, { doctor: {} }, clinic.publicKey);
+    await setVerified(null, clinic.publicKey, true);
+    await setVerified(null, doctor.publicKey, true);
+    await registerPatient(patient);
+  });
+
+  it('rejects a co-signer that is not the key service', async () => {
+    const fake = Keypair.generate();
+    await expectError(issueRecord({ keyServiceSigner: fake }), 'NotKeyService');
+  });
+
+  it('rejects an unverified doctor', async () => {
+    await expectError(issueRecord({ issuer: unverified }), 'ProviderNotVerified');
+  });
+
+  it('rejects a clinic as issuer, even if verified', async () => {
+    await expectError(issueRecord({ issuer: clinic }), 'NotADoctor');
+  });
+
+  it('rejects an empty or too long storage ref', async () => {
+    await expectError(issueRecord({ storageRef: '' }), 'InvalidStorageRef');
+    await expectError(issueRecord({ storageRef: 'x'.repeat(65) }), 'InvalidStorageRef');
+  });
+
+  it('issues an Active record with the sponsor as rent payer', async () => {
+    await issueRecord();
+    const r = await program.account.record.fetch(recordPda(patient.publicKey, 0));
+    assert.ok(r.patient.equals(patient.publicKey));
+    assert.ok(r.issuer.equals(doctor.publicKey));
+    assert.equal(r.recordId.toNumber(), 0);
+    assert.deepEqual(r.contentHash, hash);
+    assert.equal(r.storageRef, 'obj_7f3a9c');
+    assert.deepEqual(r.status, { active: {} });
+    assert.ok(r.rentPayer.equals(admin));
+    assert.equal(r.supersedes, null);
+    assert.equal(await provider.connection.getBalance(doctor.publicKey), 0);
+
+    const p = await program.account.patientProfile.fetch(patientPda(patient.publicKey));
+    assert.equal(p.nextRecordId.toNumber(), 1);
+  });
+
+  it('uses the next record id for the following record', async () => {
+    await issueRecord({ recordId: 1 });
+    const r = await program.account.record.fetch(recordPda(patient.publicKey, 1));
+    assert.equal(r.recordId.toNumber(), 1);
+  });
+
+  it('rejects a record PDA that does not match next_record_id', async () => {
+    await expectError(issueRecord({ recordId: 5 }), 'ConstraintSeeds');
+  });
+
+  it('rejects superseding a record that is not voided', async () => {
+    await expectError(
+      issueRecord({ recordId: 2, supersedes: recordPda(patient.publicKey, 0) }),
+      'RecordNotVoided',
+    );
+  });
+
+  // dispute_record / void_record work on record 0; signers pay no fees.
+  const dispute = (signer: web3.Keypair, recordId = 0) =>
+    program.methods
+      .disputeRecord()
+      .accountsPartial({ patient: signer.publicKey, record: recordPda(patient.publicKey, recordId) })
+      .signers([signer])
+      .rpc();
+  const voidRecord = (signer: web3.Keypair, recordId = 0) =>
+    program.methods
+      .voidRecord()
+      .accountsPartial({ issuer: signer.publicKey, record: recordPda(patient.publicKey, recordId) })
+      .signers([signer])
+      .rpc();
+  const status = async (recordId = 0) =>
+    (await program.account.record.fetch(recordPda(patient.publicKey, recordId))).status;
+
+  it('rejects voiding a record that is not disputed', async () => {
+    await expectError(voidRecord(doctor), 'RecordNotDisputed');
+  });
+
+  it('rejects a dispute from anyone but the patient', async () => {
+    await expectError(dispute(doctor), 'Unauthorized');
+  });
+
+  it('lets the patient dispute an Active record', async () => {
+    await dispute(patient);
+    assert.deepEqual(await status(), { disputed: {} });
+  });
+
+  it('rejects disputing a record that is not Active', async () => {
+    await expectError(dispute(patient), 'RecordNotActive');
+  });
+
+  it('rejects a void from anyone but the issuer', async () => {
+    await expectError(voidRecord(patient), 'Unauthorized');
+  });
+
+  it('lets the issuer void a disputed record', async () => {
+    await voidRecord(doctor);
+    assert.deepEqual(await status(), { voided: {} });
+    await expectError(voidRecord(doctor), 'RecordNotDisputed');
+  });
+
+  it('rejects a re-issue by a doctor other than the original issuer', async () => {
+    const other = Keypair.generate();
+    await registerProvider(other, { doctor: {} }, clinic.publicKey);
+    await setVerified(null, other.publicKey, true);
+    await expectError(
+      issueRecord({ issuer: other, recordId: 2, supersedes: recordPda(patient.publicKey, 0) }),
+      'Unauthorized',
+    );
+  });
+
+  it('re-issues a voided record as a new Active record that supersedes it', async () => {
+    await issueRecord({ recordId: 2, supersedes: recordPda(patient.publicKey, 0) });
+    const r = await program.account.record.fetch(recordPda(patient.publicKey, 2));
+    assert.deepEqual(r.status, { active: {} });
+    assert.ok(r.supersedes.equals(recordPda(patient.publicKey, 0)));
   });
 });
