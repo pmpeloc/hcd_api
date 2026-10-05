@@ -51,9 +51,20 @@ npm run anchor:deploy  # deploy to devnet
 | IDL | on-chain metadata account, identical to `idl/hcd.json` |
 | Explorer | https://explorer.solana.com/address/8FNP6rs3DQ4h6bqWNeD9meHt5mUNEhcaXbrbJxSJniyd?cluster=devnet |
 
-The Config was created once with
-`node scripts/initialize-config.mts <key_service_pubkey> <max_grant_days>`
-(WSL, upgrade authority wallet). It cannot be changed or created again.
+### Admin scripts
+
+Run from WSL in `hcd_api/`. They sign with the upgrade authority wallet (the
+Config admin) and use `SOLANA_RPC_URL` from `.env` (override with
+`ANCHOR_PROVIDER_URL` / `ANCHOR_WALLET`).
+
+```sh
+# Verify a provider after checking its license off-chain; `false` suspends it
+# (it can no longer issue records, receive grants or have access logged).
+node scripts/set-provider-verified.mts <provider_authority_pubkey> <true|false>
+
+# One-time Config setup (already done on devnet; it cannot run twice).
+node scripts/initialize-config.mts <key_service_pubkey> <max_grant_days>
+```
 
 `npm run anchor:test:devnet` runs the same suite against the deployed
 program without redeploying (~0.07 SOL per run from the upgrade authority
