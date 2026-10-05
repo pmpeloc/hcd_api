@@ -38,6 +38,20 @@ npm run anchor:test    # run tests/ against a local validator
 npm run anchor:deploy  # deploy to devnet
 ```
 
+## Program on devnet
+
+| | |
+|---|---|
+| Program ID | `8FNP6rs3DQ4h6bqWNeD9meHt5mUNEhcaXbrbJxSJniyd` |
+| Upgrade authority | `6AdUWfFLkpBCHNSsnCLKbEPB8khvGcnFHZczx6zjTdiQ` (also the Config admin) |
+| IDL | on-chain metadata account, identical to `idl/hcd.json` |
+| Explorer | https://explorer.solana.com/address/8FNP6rs3DQ4h6bqWNeD9meHt5mUNEhcaXbrbJxSJniyd?cluster=devnet |
+
+Upgrading needs the upgrade authority wallet with enough devnet SOL: a
+temporary buffer the size of `target/deploy/hcd.so` (~1.6 SOL for 314 KB,
+refunded after the upgrade) plus rent if the program grows. Check with
+`solana rent $(stat -c %s target/deploy/hcd.so) -u devnet`.
+
 ## Architecture notes
 
 - Nothing medical goes on-chain: only identity, grants, hashes, signatures
