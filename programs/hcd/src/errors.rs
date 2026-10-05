@@ -2,8 +2,6 @@ use anchor_lang::prelude::*;
 
 #[error_code]
 pub enum HcdError {
-    #[msg("Instruction not implemented yet.")]
-    Unimplemented,
     #[msg("Signer is not authorized for this action.")]
     Unauthorized,
     #[msg("Provider is not verified.")]
@@ -22,7 +20,7 @@ pub enum HcdError {
     GrantNotActive,
     #[msg("Access grant has expired.")]
     GrantExpired,
-    #[msg("Only the key service can log access.")]
+    #[msg("Signer is not the configured key service.")]
     NotKeyService,
     #[msg("Numerical overflow.")]
     Overflow,
@@ -30,4 +28,12 @@ pub enum HcdError {
     InvalidGrantDuration,
     #[msg("A clinic's organization must be itself; a doctor's must be another account.")]
     InvalidOrganization,
+    #[msg("Only a doctor can issue records.")]
+    NotADoctor,
+    #[msg("Storage ref must be 1 to 64 bytes.")]
+    InvalidStorageRef,
+    #[msg("Only a voided record can be superseded.")]
+    RecordNotVoided,
+    #[msg("Only a disputed record can be voided.")]
+    RecordNotDisputed,
 }
