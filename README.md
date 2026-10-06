@@ -5,6 +5,7 @@ builder/fee payer, and the Anchor program that is the source of truth for
 permissions and audit.
 
 - `programs/hcd/` - Anchor program (Rust): accounts, instructions, events.
+  Design and security decisions: [`programs/hcd/README.md`](programs/hcd/README.md).
 - `tests/` - Anchor tests in TypeScript (positive and negative cases).
 - `idl/` - published IDL; `hcd_app` and this API generate their clients from it.
 - `supabase/migrations/` - database schema and RLS (Supabase CLI).
