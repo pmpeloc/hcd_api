@@ -1,6 +1,11 @@
 import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
+import { SupabaseAuthGuard } from './supabase-auth.guard';
+import { SupabaseClientFactory } from './supabase-client.factory';
 
-// Verifies the Supabase Auth token on each request (auth.getClaims) and loads
-// role/organization from app_user - never from token claims.
-@Module({})
+@Module({
+  imports: [ConfigModule],
+  providers: [SupabaseAuthGuard, SupabaseClientFactory],
+  exports: [SupabaseAuthGuard, SupabaseClientFactory],
+})
 export class AuthModule {}
