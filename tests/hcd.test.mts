@@ -6,6 +6,7 @@
 // types; .mts marks the file as an ES module).
 import { before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { parseEnv } from 'node:util';
 import anchor from '@anchor-lang/core'; // CommonJS package: no named ESM exports
@@ -147,6 +148,16 @@ describe('initialize_config', () => {
     await expectError(initializeConfig(null, 0), 'InvalidGrantDuration');
   });
 
+  it('rejects a key service equal to the admin', freshOnly, async () => {
+    await expectError(
+      program.methods
+        .initializeConfig(admin, new BN(7 * ONE_DAY))
+        .accountsPartial({ admin, config: configPda, programData })
+        .rpc(),
+      'KeyServiceIsAdmin',
+    );
+  });
+
   it('lets the upgrade authority create the config', freshOnly, async () => {
     await initializeConfig(null, 7 * ONE_DAY);
     const config = await program.account.config.fetch(configPda);
@@ -257,22 +268,25 @@ describe('issue_record / dispute_record / void_record', () => {
   const issueRecord = (opts: {
     issuer?: web3.Keypair;
     keyServiceSigner?: web3.Keypair;
+    to?: web3.PublicKey;
     recordId?: number;
     storageRef?: string;
+    contentHash?: number[];
     supersedes?: web3.PublicKey | null;
   } = {}) => {
     const issuer = opts.issuer ?? doctor;
     const ks = opts.keyServiceSigner ?? keyService;
+    const to = opts.to ?? patient.publicKey;
     return program.methods
-      .issueRecord(hash, opts.storageRef ?? 'obj_7f3a9c')
+      .issueRecord(opts.contentHash ?? hash, opts.storageRef ?? randomUUID())
       .accountsPartial({
         payer: admin,
         issuer: issuer.publicKey,
         keyService: ks.publicKey,
         config: configPda,
         issuerProvider: providerPda(issuer.publicKey),
-        patientProfile: patientPda(patient.publicKey),
-        record: recordPda(patient.publicKey, opts.recordId ?? 0),
+        patientProfile: patientPda(to),
+        record: recordPda(to, opts.recordId ?? 0),
         supersededRecord: opts.supersedes ?? null,
       })
       .signers([issuer, ks])
@@ -301,19 +315,48 @@ describe('issue_record / dispute_record / void_record', () => {
     await expectError(issueRecord({ issuer: clinic }), 'NotADoctor');
   });
 
-  it('rejects an empty or too long storage ref', async () => {
-    await expectError(issueRecord({ storageRef: '' }), 'InvalidStorageRef');
-    await expectError(issueRecord({ storageRef: 'x'.repeat(65) }), 'InvalidStorageRef');
+  it('rejects a storage ref that is not a lowercase UUID', async () => {
+    for (const storageRef of [
+      '',
+      'x'.repeat(65),
+      randomUUID().toUpperCase(),
+      randomUUID().replaceAll('-', ''),
+      'pacientes/juan-perez/rx-pierna.pdf.enc',
+    ]) {
+      await expectError(issueRecord({ storageRef }), 'InvalidStorageRef');
+    }
+  });
+
+  it('rejects an all-zero content hash', async () => {
+    await expectError(issueRecord({ contentHash: Array(32).fill(0) }), 'InvalidContentHash');
+  });
+
+  it('rejects a doctor issuing a record to themselves', async () => {
+    await registerPatient(doctor);
+    await expectError(issueRecord({ to: doctor.publicKey }), 'IssuerIsPatient');
+  });
+
+  it('rejects a doctor who was verified and then suspended', async () => {
+    const suspended = Keypair.generate();
+    await registerProvider(suspended, { doctor: {} }, clinic.publicKey);
+    await setVerified(null, suspended.publicKey, true);
+    await setVerified(null, suspended.publicKey, false);
+    await expectError(issueRecord({ issuer: suspended }), 'ProviderNotVerified');
+  });
+
+  it('rejects a patient without a profile', async () => {
+    await expectError(issueRecord({ to: Keypair.generate().publicKey }), 'AccountNotInitialized');
   });
 
   it('issues an Active record with the sponsor as rent payer', async () => {
-    await issueRecord();
+    const storageRef = randomUUID();
+    await issueRecord({ storageRef });
     const r = await program.account.record.fetch(recordPda(patient.publicKey, 0));
     assert.ok(r.patient.equals(patient.publicKey));
     assert.ok(r.issuer.equals(doctor.publicKey));
     assert.equal(r.recordId.toNumber(), 0);
     assert.deepEqual(r.contentHash, hash);
-    assert.equal(r.storageRef, 'obj_7f3a9c');
+    assert.equal(r.storageRef, storageRef);
     assert.deepEqual(r.status, { active: {} });
     assert.ok(r.rentPayer.equals(admin));
     assert.equal(r.supersedes, null);
@@ -347,10 +390,10 @@ describe('issue_record / dispute_record / void_record', () => {
       .accountsPartial({ patient: signer.publicKey, record: recordPda(patient.publicKey, recordId) })
       .signers([signer])
       .rpc();
-  const voidRecord = (signer: web3.Keypair, recordId = 0) =>
+  const voidRecord = (signer: web3.Keypair, recordId = 0, owner = patient.publicKey) =>
     program.methods
       .voidRecord()
-      .accountsPartial({ issuer: signer.publicKey, record: recordPda(patient.publicKey, recordId) })
+      .accountsPartial({ issuer: signer.publicKey, record: recordPda(owner, recordId) })
       .signers([signer])
       .rpc();
   const status = async (recordId = 0) =>
@@ -399,6 +442,27 @@ describe('issue_record / dispute_record / void_record', () => {
     assert.deepEqual(r.status, { active: {} });
     assert.ok(r.supersedes.equals(recordPda(patient.publicKey, 0)));
   });
+
+  it("rejects superseding another patient's voided record", async () => {
+    const other = Keypair.generate();
+    await registerPatient(other);
+    await issueRecord({ to: other.publicKey });
+    const otherRecord = recordPda(other.publicKey, 0);
+    await program.methods
+      .disputeRecord()
+      .accountsPartial({ patient: other.publicKey, record: otherRecord })
+      .signers([other])
+      .rpc();
+    await voidRecord(doctor, 0, other.publicKey);
+    await expectError(issueRecord({ recordId: 3, supersedes: otherRecord }), 'Unauthorized');
+  });
+
+  it('rejects a superseded account that is not a Record', async () => {
+    await expectError(
+      issueRecord({ recordId: 3, supersedes: patientPda(patient.publicKey) }),
+      'AccountDiscriminatorMismatch',
+    );
+  });
 });
 
 describe('grant_access / revoke_access / log_access', () => {
@@ -418,7 +482,7 @@ describe('grant_access / revoke_access / log_access', () => {
 
   const issue = (recordId: number) =>
     program.methods
-      .issueRecord(Array(32).fill(1), `obj_${recordId}`)
+      .issueRecord(Array(32).fill(1), randomUUID())
       .accountsPartial({
         payer: admin,
         issuer: doctor.publicKey,
@@ -456,6 +520,8 @@ describe('grant_access / revoke_access / log_access', () => {
       .rpc();
   };
 
+  const otherPatient = Keypair.generate();
+
   const revoke = (signer: web3.Keypair) =>
     program.methods
       .revokeAccess()
@@ -467,7 +533,14 @@ describe('grant_access / revoke_access / log_access', () => {
   // blockhash, and the network drops the second as a duplicate (seen on
   // devnet). A distinct compute unit limit per call makes each tx unique.
   let logNonce = 0;
-  const logAccess = (opts: { signer?: web3.Keypair; record?: web3.PublicKey } = {}) => {
+  const logAccess = (
+    opts: {
+      signer?: web3.Keypair;
+      record?: web3.PublicKey;
+      passedRecord?: web3.PublicKey;
+      passedDoctor?: web3.PublicKey;
+    } = {},
+  ) => {
     const signer = opts.signer ?? keyService;
     const record = opts.record ?? record0;
     return program.methods
@@ -476,8 +549,8 @@ describe('grant_access / revoke_access / log_access', () => {
         keyService: signer.publicKey,
         config: configPda,
         grant: grantPda(record, doctor.publicKey),
-        record,
-        doctorProvider: providerPda(doctor.publicKey),
+        record: opts.passedRecord ?? record,
+        doctorProvider: providerPda(opts.passedDoctor ?? doctor.publicKey),
       })
       .preInstructions([ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 + ++logNonce })])
       .signers([signer])
@@ -499,6 +572,35 @@ describe('grant_access / revoke_access / log_access', () => {
 
   it('rejects a grant signed by anyone but the patient', async () => {
     await expectError(grant({ signer: doctor }), 'Unauthorized');
+  });
+
+  it("rejects a grant by another patient on a record that isn't theirs", async () => {
+    await registerPatient(otherPatient);
+    await expectError(grant({ signer: otherPatient }), 'Unauthorized');
+  });
+
+  it('rejects a grant whose doctor argument does not match the provider account', async () => {
+    const expiresAt = (await chainNow()) + ONE_DAY;
+    await expectError(
+      program.methods
+        .grantAccess(unverified.publicKey, new BN(expiresAt))
+        .accountsPartial({
+          payer: admin,
+          patient: patient.publicKey,
+          config: configPda,
+          record: record0,
+          doctorProvider: providerPda(doctor.publicKey),
+          grant: grantPda(record0, doctor.publicKey),
+        })
+        .signers([patient])
+        .rpc(),
+      'ConstraintSeeds',
+    );
+  });
+
+  it('accepts an expiration exactly at the configured maximum', async () => {
+    await grant({ record: record1, expiresIn: 7 * ONE_DAY });
+    assert.deepEqual((await fetchGrant(record1)).status, { active: {} });
   });
 
   it('rejects an expiration in the past', async () => {
@@ -530,8 +632,37 @@ describe('grant_access / revoke_access / log_access', () => {
     assert.equal(await provider.connection.getBalance(patient.publicKey), 0);
   });
 
+  it('re-grants an active grant with another payer without changing rent_payer or patient', async () => {
+    const otherPayer = await funded();
+    const expiresAt = (await chainNow()) + 2 * ONE_DAY;
+    await program.methods
+      .grantAccess(doctor.publicKey, new BN(expiresAt))
+      .accountsPartial({
+        payer: otherPayer.publicKey,
+        patient: patient.publicKey,
+        config: configPda,
+        record: record0,
+        doctorProvider: providerPda(doctor.publicKey),
+        grant: grantPda(record0, doctor.publicKey),
+      })
+      .signers([patient, otherPayer])
+      .rpc();
+    const g = await fetchGrant();
+    assert.equal(g.expiresAt.toNumber(), expiresAt);
+    assert.ok(g.rentPayer.equals(admin));
+    assert.ok(g.patient.equals(patient.publicKey));
+  });
+
   it('rejects a log from anyone but the key service', async () => {
     await expectError(logAccess({ signer: doctor }), 'NotKeyService');
+  });
+
+  it("rejects a log that passes a record other than the grant's", async () => {
+    await expectError(logAccess({ passedRecord: record1 }), 'ConstraintAddress');
+  });
+
+  it("rejects a log that passes another doctor's provider account", async () => {
+    await expectError(logAccess({ passedDoctor: unverified.publicKey }), 'ConstraintSeeds');
   });
 
   it('rejects a log for a verified doctor who was never granted access', async () => {
@@ -568,6 +699,7 @@ describe('grant_access / revoke_access / log_access', () => {
 
   it('rejects a revoke from anyone but the patient', async () => {
     await expectError(revoke(doctor), 'Unauthorized');
+    await expectError(revoke(otherPatient), 'Unauthorized');
   });
 
   it('revokes without closing the account and blocks further logs', async () => {
@@ -611,5 +743,56 @@ describe('grant_access / revoke_access / log_access', () => {
       .rpc();
     await expectError(logAccess({ record: record1 }), 'RecordDisputed');
     await expectError(grant({ record: record1 }), 'RecordNotActive');
+  });
+
+  it('rejects a log on a voided record', async () => {
+    await program.methods
+      .voidRecord()
+      .accountsPartial({ issuer: doctor.publicKey, record: record1 })
+      .signers([doctor])
+      .rpc();
+    await expectError(logAccess({ record: record1 }), 'RecordVoided');
+  });
+});
+
+describe('update_config', () => {
+  const freshOnly = { skip: onDevnet && 'would change the real devnet Config' };
+  const update = (signer: web3.Keypair | null, newAdmin: web3.PublicKey, newKs: web3.PublicKey, secs: number) => {
+    const builder = program.methods
+      .updateConfig(newAdmin, newKs, new BN(secs))
+      .accountsPartial({ admin: signer?.publicKey ?? admin, config: configPda });
+    return signer ? builder.signers([signer]).rpc() : builder.rpc();
+  };
+
+  // These three fail before changing anything, so they are safe on devnet.
+  it('rejects an update by anyone but the admin', async () => {
+    const intruder = await funded();
+    await expectError(update(intruder, intruder.publicKey, keyService.publicKey, ONE_DAY), 'Unauthorized');
+  });
+
+  it('rejects a non-positive max grant duration', async () => {
+    await expectError(update(null, admin, keyService.publicKey, 0), 'InvalidGrantDuration');
+  });
+
+  it('rejects a key service equal to the admin', async () => {
+    await expectError(update(null, admin, admin, 7 * ONE_DAY), 'KeyServiceIsAdmin');
+  });
+
+  it('hands the admin role over and back, rotating the key service', freshOnly, async () => {
+    const newAdmin = Keypair.generate();
+    const newKs = Keypair.generate().publicKey;
+    await update(null, newAdmin.publicKey, newKs, ONE_DAY);
+    let config = await program.account.config.fetch(configPda);
+    assert.ok(config.admin.equals(newAdmin.publicKey));
+    assert.ok(config.keyService.equals(newKs));
+    assert.equal(config.maxGrantDurationSecs.toNumber(), ONE_DAY);
+
+    // The old admin lost the role; the new one restores the original values.
+    await expectError(update(null, admin, keyService.publicKey, 7 * ONE_DAY), 'Unauthorized');
+    await update(newAdmin, admin, keyService.publicKey, 7 * ONE_DAY);
+    config = await program.account.config.fetch(configPda);
+    assert.ok(config.admin.equals(admin));
+    assert.ok(config.keyService.equals(keyService.publicKey));
+    assert.equal(config.maxGrantDurationSecs.toNumber(), 7 * ONE_DAY);
   });
 });

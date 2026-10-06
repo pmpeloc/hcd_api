@@ -41,7 +41,7 @@ All accounts are PDAs. The seed prefixes are constants (`SEED`) in
 | `Config` | `["config"]` | `admin`, `key_service`, `max_grant_duration_secs` |
 | `Provider` | `["provider", authority]` | `provider_type` (Clinic or Doctor), `verified`, `organization` |
 | `PatientProfile` | `["patient", authority]` | `next_record_id`, `created_at` |
-| `Record` | `["record", patient, record_id (u64 LE)]` | `issuer`, `content_hash`, `storage_ref` (≤ 64 bytes), `status`, `created_at`, `rent_payer`, `supersedes` |
+| `Record` | `["record", patient, record_id (u64 LE)]` | `issuer`, `content_hash`, `storage_ref` (lowercase UUID), `status`, `created_at`, `rent_payer`, `supersedes` |
 | `AccessGrant` | `["grant", record, doctor]` | `expires_at`, `status`, `access_count`, `rent_payer` |
 
 - `Record.status`: **Active** → **Disputed** (patient says "not mine") →
@@ -55,18 +55,19 @@ All accounts are PDAs. The seed prefixes are constants (`SEED`) in
 
 | Instruction | Signers | Rules |
 |---|---|---|
-| `initialize_config` | upgrade authority | One-time. `max_grant_duration_secs` > 0. |
+| `initialize_config` | upgrade authority | One-time. `max_grant_duration_secs` > 0; `key_service` ≠ admin. |
+| `update_config` | admin | Replaces admin, `key_service` and max duration (same checks). Existing grants keep their expiration. |
 | `register_provider` | payer + authority | Born unverified. A clinic's `organization` is itself; a doctor's is another account. |
 | `set_provider_verified` | admin | Verifies, and also suspends (`false`). |
 | `register_patient` | payer + authority | Starts `next_record_id` at 0. |
-| `issue_record` | payer + verified **doctor** + **key_service** | Uses `next_record_id` as the seed and bumps it. Record is born Active. Optional `superseded_record` must be Voided, with the same patient and issuer. |
+| `issue_record` | payer + verified **doctor** + **key_service** | Uses `next_record_id` as the seed and bumps it. Record is born Active. Issuer ≠ patient; `content_hash` not all zeros; `storage_ref` is the backend `records.id` UUID. Optional `superseded_record` must be Voided, with the same patient and issuer. |
 | `dispute_record` | patient | Active → Disputed. |
 | `void_record` | issuer | Disputed → Voided. Works even if the issuer is suspended. |
 | `grant_access` | payer + patient | Record Active; grantee is a **verified doctor**; `expires_at` > now and ≤ now + max, checked against `Clock`. |
 | `revoke_access` | patient | Active → Revoked. The account stays open (audit trail). |
 | `log_access` | **key_service** | Grant Active and unexpired (`Clock`), record not Disputed or Voided, doctor still verified. Increments `access_count`. |
 
-Events: `RecordIssued`, `RecordDisputed`, `RecordVoided`, `AccessGranted`,
+Events: `ConfigUpdated`, `RecordIssued`, `RecordDisputed`, `RecordVoided`, `AccessGranted`,
 `AccessRevoked`, `AccessLogged`. They carry pubkeys, ids, expirations and
 counters only.
 
@@ -105,5 +106,24 @@ The why behind each one is in `hcd/docs/proyecto/decisiones.md`.
 - **No medical or identifying data** in accounts or events: no names,
   diagnoses, national IDs or readable paths. Only pubkeys, hashes and an
   opaque `storage_ref`.
-- **The `Config` cannot be changed.** Rotating `key_service` or the admin
-  needs a new instruction first.
+- **The admin can rotate the Config** with `update_config`: a leaked
+  `key_service` is replaced in one transaction (`scripts/update-config.mts`),
+  and `key_service` can never be the admin, so the admin can't forge the
+  audit. Handing the admin role to a wallet nobody controls locks it for good.
+- **`storage_ref` only accepts a lowercase UUID** (the backend `records.id`),
+  so a readable path, name or ID number can't be written on-chain by mistake.
+
+## Accepted risks (MVP)
+
+Found in the 2026-10-06 security review; kept on purpose for the MVP.
+
+- **A voided record can be superseded more than once.** Each re-issue is a new
+  record pointing to the same voided one, and no extra permission comes from
+  it. The app shows the most recent one (`created_at`).
+- **Re-verifying a suspended doctor re-enables their grants that are still
+  Active and unexpired.** Suspension blocks `log_access` but doesn't revoke
+  grants. Before re-verifying, the admin reviews that doctor's grants.
+- **Relationship metadata is public.** Accounts and events link a patient's
+  wallet with doctors' wallets and dates. No medical data, but an observer can
+  infer who sees whom. Mitigation for later: a separate patient wallet per
+  relationship or an opaque seed instead of the wallet.

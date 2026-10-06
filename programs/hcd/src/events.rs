@@ -1,6 +1,13 @@
 use anchor_lang::prelude::*;
 
 #[event]
+pub struct ConfigUpdated {
+    pub admin: Pubkey,
+    pub key_service: Pubkey,
+    pub max_grant_duration_secs: i64,
+}
+
+#[event]
 pub struct RecordIssued {
     pub record: Pubkey,
     pub patient: Pubkey,

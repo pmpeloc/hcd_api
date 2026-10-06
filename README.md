@@ -65,6 +65,10 @@ node scripts/set-provider-verified.mts <provider_authority_pubkey> <true|false>
 
 # One-time Config setup (already done on devnet; it cannot run twice).
 node scripts/initialize-config.mts <key_service_pubkey> <max_grant_days>
+
+# Replace the Config, e.g. to rotate a leaked key_service. Pass the current
+# value for anything that should not change.
+node scripts/update-config.mts <admin_pubkey> <key_service_pubkey> <max_grant_days>
 ```
 
 `npm run anchor:test:devnet` runs the same suite against the deployed

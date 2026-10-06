@@ -35,6 +35,7 @@ pub fn handler(
     max_grant_duration_secs: i64,
 ) -> Result<()> {
     require!(max_grant_duration_secs > 0, HcdError::InvalidGrantDuration);
+    require_keys_neq!(ctx.accounts.admin.key(), key_service, HcdError::KeyServiceIsAdmin);
 
     ctx.accounts.config.set_inner(Config {
         admin: ctx.accounts.admin.key(),
