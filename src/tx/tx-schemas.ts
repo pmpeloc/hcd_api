@@ -48,7 +48,14 @@ export const buildTxSchema = z.discriminatedUnion('instruction', [
       .object({
         patient: pubkey, // scanned from the patient's QR
         content_hash: contentHash,
-        storage_ref: z.string().min(1).max(64),
+        // IDL v1: storage_ref is the records.id UUID (canonical lowercase),
+        // never a readable path - the program rejects anything else.
+        storage_ref: z
+          .string()
+          .regex(
+            /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+            'storage_ref must be a lowercase UUID (the records.id)',
+          ),
         superseded_record: pubkey.nullish(),
       })
       .strict(),
