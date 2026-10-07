@@ -121,3 +121,29 @@ Regression test (disposable plain PostgreSQL database only, not Supabase):
 The test bootstraps minimal auth objects, checks legacy preservation, valid
 releases, invalid audit states, and retained RLS/write restrictions, then rolls
 back. It does not replace integration or cross-organization RLS tests in Supabase.
+
+## Supabase authentication guard
+
+Import `AuthModule` in the consuming module and apply
+`@UseGuards(SupabaseAuthGuard)` to its protected controller or routes. The guard
+is opt-in: exporting it does not automatically protect endpoints. Keys and tx
+integration must apply it before those endpoints are exposed.
+
+On success, `AuthenticatedRequest.user` contains `id`, `role`,
+`organizationId` and `status`. Those values come from `app_user`, not JWT role
+claims. `AuthenticatedRequest.supabase` is a request-local client using the
+user's token for RLS reads. Do not replace it with a service-role client.
+Only the verified token subject is used to find the profile. Wallet enrollment
+and role-specific authorization are separate responsibilities; this guard alone
+does not authorize medical record access or administrative actions.
+
+Required config: `SUPABASE_URL` and `SUPABASE_ANON_KEY`. The guard does not need
+the wallet migration, Privy, or service-role credentials. Responses: 401 for
+missing/invalid credentials; 403 for absent, invalid or suspended profiles;
+503 for auth infrastructure exceptions or profile query errors. No tokens or
+provider error details are logged or returned. Supabase getClaims validates the
+JWT signature and expiration; session revocation behavior follows that API.
+
+`npm test -- --runInBand` tests guard decisions with mocked Supabase responses;
+it does not replace a real Supabase login/RLS integration test. The test command
+uses Node VM modules to load the repository's ESM Nest dependencies.
