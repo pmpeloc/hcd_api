@@ -190,7 +190,7 @@ describe('TxService', () => {
       args: {
         patient: patient.publicKey.toBase58(),
         content_hash: 'ab'.repeat(32),
-        storage_ref: 'obj_synthetic_1',
+        storage_ref: '3f2b8c1e-9a4d-4e7b-8c2a-1d5e6f7a8b9c',
       },
     });
     const tx = Transaction.from(Buffer.from(built.tx_base64, 'base64'));
@@ -217,7 +217,7 @@ describe('TxService', () => {
         args: {
           patient: kp().publicKey.toBase58(),
           content_hash: 'ab'.repeat(32),
-          storage_ref: 'obj_1',
+          storage_ref: '3f2b8c1e-9a4d-4e7b-8c2a-1d5e6f7a8b9c',
         },
       }),
     ).rejects.toMatchObject({ status: 404 });
@@ -233,6 +233,25 @@ describe('TxService', () => {
         instruction,
         signer: kp().publicKey.toBase58(),
         args: {},
+      });
+      expect(result.success).toBe(false);
+    }
+  });
+
+  it('issue_record rejects a storage_ref that is not a lowercase UUID', () => {
+    for (const storage_ref of [
+      'obj_synthetic_1',
+      'pacientes/juan/rx.pdf.enc',
+      '3F2B8C1E-9A4D-4E7B-8C2A-1D5E6F7A8B9C',
+    ]) {
+      const result = buildTxSchema.safeParse({
+        instruction: 'issue_record',
+        signer: kp().publicKey.toBase58(),
+        args: {
+          patient: kp().publicKey.toBase58(),
+          content_hash: 'ab'.repeat(32),
+          storage_ref,
+        },
       });
       expect(result.success).toBe(false);
     }
