@@ -760,6 +760,61 @@
       ]
     },
     {
+      "name": "update_config",
+      "discriminator": [
+        29,
+        158,
+        252,
+        191,
+        10,
+        83,
+        219,
+        99
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "admin",
+          "type": "pubkey"
+        },
+        {
+          "name": "key_service",
+          "type": "pubkey"
+        },
+        {
+          "name": "max_grant_duration_secs",
+          "type": "i64"
+        }
+      ]
+    },
+    {
       "name": "void_record",
       "discriminator": [
         186,
@@ -920,6 +975,19 @@
       ]
     },
     {
+      "name": "ConfigUpdated",
+      "discriminator": [
+        40,
+        241,
+        230,
+        122,
+        11,
+        19,
+        198,
+        194
+      ]
+    },
+    {
       "name": "RecordDisputed",
       "discriminator": [
         9,
@@ -1033,7 +1101,7 @@
     {
       "code": 6014,
       "name": "InvalidStorageRef",
-      "msg": "Storage ref must be 1 to 64 bytes."
+      "msg": "Storage ref must be a lowercase UUID."
     },
     {
       "code": 6015,
@@ -1044,6 +1112,21 @@
       "code": 6016,
       "name": "RecordNotDisputed",
       "msg": "Only a disputed record can be voided."
+    },
+    {
+      "code": 6017,
+      "name": "KeyServiceIsAdmin",
+      "msg": "The key service must be a different key from the admin."
+    },
+    {
+      "code": 6018,
+      "name": "IssuerIsPatient",
+      "msg": "A doctor cannot issue a record to themselves."
+    },
+    {
+      "code": 6019,
+      "name": "InvalidContentHash",
+      "msg": "Content hash cannot be all zeros."
     }
   ],
   "types": [
@@ -1213,6 +1296,26 @@
           {
             "name": "bump",
             "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ConfigUpdated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "key_service",
+            "type": "pubkey"
+          },
+          {
+            "name": "max_grant_duration_secs",
+            "type": "i64"
           }
         ]
       }

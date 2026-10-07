@@ -30,10 +30,16 @@ pub enum HcdError {
     InvalidOrganization,
     #[msg("Only a doctor can issue records.")]
     NotADoctor,
-    #[msg("Storage ref must be 1 to 64 bytes.")]
+    #[msg("Storage ref must be a lowercase UUID.")]
     InvalidStorageRef,
     #[msg("Only a voided record can be superseded.")]
     RecordNotVoided,
     #[msg("Only a disputed record can be voided.")]
     RecordNotDisputed,
+    #[msg("The key service must be a different key from the admin.")]
+    KeyServiceIsAdmin,
+    #[msg("A doctor cannot issue a record to themselves.")]
+    IssuerIsPatient,
+    #[msg("Content hash cannot be all zeros.")]
+    InvalidContentHash,
 }

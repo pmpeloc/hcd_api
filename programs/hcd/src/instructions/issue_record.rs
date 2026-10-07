@@ -33,6 +33,7 @@ pub struct IssueRecord<'info> {
         mut,
         seeds = [PatientProfile::SEED, patient_profile.authority.as_ref()],
         bump = patient_profile.bump,
+        constraint = patient_profile.authority != issuer.key() @ HcdError::IssuerIsPatient,
     )]
     pub patient_profile: Account<'info, PatientProfile>,
     #[account(
@@ -63,10 +64,8 @@ pub fn handler(
     content_hash: [u8; 32],
     storage_ref: String,
 ) -> Result<()> {
-    require!(
-        !storage_ref.is_empty() && storage_ref.len() <= Record::MAX_STORAGE_REF_LEN,
-        HcdError::InvalidStorageRef
-    );
+    require!(content_hash != [0u8; 32], HcdError::InvalidContentHash);
+    require!(is_lowercase_uuid(&storage_ref), HcdError::InvalidStorageRef);
 
     let profile = &mut ctx.accounts.patient_profile;
     let record_id = profile.next_record_id;
@@ -94,4 +93,31 @@ pub fn handler(
         record_id,
     });
     Ok(())
+}
+
+/// `storage_ref` is the `records.id` UUID of the backend (decision
+/// 2026-10-06): opaque, so no readable path or name can land on-chain.
+/// Canonical form only: 36 chars, lowercase hex, dashes at 8, 13, 18, 23.
+fn is_lowercase_uuid(s: &str) -> bool {
+    s.len() == 36
+        && s.bytes().enumerate().all(|(i, b)| match i {
+            8 | 13 | 18 | 23 => b == b'-',
+            _ => b.is_ascii_digit() || (b'a'..=b'f').contains(&b),
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_lowercase_uuid;
+
+    #[test]
+    fn accepts_only_canonical_lowercase_uuids() {
+        assert!(is_lowercase_uuid("3f2b8c1e-9a4d-4e7b-8c2a-1d5e6f7a8b9c"));
+        assert!(!is_lowercase_uuid("3F2B8C1E-9A4D-4E7B-8C2A-1D5E6F7A8B9C"));
+        assert!(!is_lowercase_uuid("3f2b8c1e9a4d4e7b8c2a1d5e6f7a8b9c"));
+        assert!(!is_lowercase_uuid("3f2b8c1e-9a4d-4e7b-8c2a-1d5e6f7a8b9"));
+        assert!(!is_lowercase_uuid("pacientes/juan-perez/rx-pierna.pdf.enc"));
+        assert!(!is_lowercase_uuid("3f2b8c1e-9a4d-4e7b-8c2a-1d5e6f7a8b9g"));
+        assert!(!is_lowercase_uuid(""));
+    }
 }

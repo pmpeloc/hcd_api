@@ -21,6 +21,15 @@ pub mod hcd {
         instructions::initialize_config::handler(ctx, key_service, max_grant_duration_secs)
     }
 
+    pub fn update_config(
+        ctx: Context<UpdateConfig>,
+        admin: Pubkey,
+        key_service: Pubkey,
+        max_grant_duration_secs: i64,
+    ) -> Result<()> {
+        instructions::update_config::handler(ctx, admin, key_service, max_grant_duration_secs)
+    }
+
     pub fn register_provider(
         ctx: Context<RegisterProvider>,
         provider_type: state::ProviderType,
