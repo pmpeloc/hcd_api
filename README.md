@@ -65,6 +65,10 @@ node scripts/set-provider-verified.mts <provider_authority_pubkey> <true|false>
 
 # One-time Config setup (already done on devnet; it cannot run twice).
 node scripts/initialize-config.mts <key_service_pubkey> <max_grant_days>
+
+# Replace the Config, e.g. to rotate a leaked key_service. Pass the current
+# value for anything that should not change.
+node scripts/update-config.mts <admin_pubkey> <key_service_pubkey> <max_grant_days>
 ```
 
 `npm run anchor:test:devnet` runs the same suite against the deployed
@@ -90,6 +94,33 @@ refunded after the upgrade) plus rent if the program grows. Check with
   `KEY_SERVICE_SECRET` are different keypairs.
 - RLS isolates organizations: reads use a per-request Supabase client with
   the user's token; only the backend writes.
+
+## Wallet and audit migration
+
+`20261005000000_wallet_audit.sql` adds the enrollment wallet address and key
+release audit fields. Only trusted backend enrollment may bind a wallet; the
+column alone does not prove ownership. Doctor lookup still uses doctors.wallet_pubkey.
+
+New releases must specify role and a lowercase SHA-256 DEK fingerprint.
+Third-party releases require a grant and an explicit pending/confirmed/failed
+status; confirmed requires a transaction signature. Patient/issuer releases
+use skipped with no grant or signature. No plaintext key is stored.
+
+Historical rows retain null role/fingerprint. Their default skipped status is
+not evidence of a self-access: readers must treat null role as legacy/unknown.
+The two NOT VALID checks enforce new writes without fabricating historical
+metadata. Updating legacy rows requires supplying verified audit details; only
+validate those checks after a separately reviewed backfill. RLS is unchanged.
+
+The existing bigint release id can be serialized as text for Franco's Memo
+integration; adding a Memo or reserving an id before submission is outside this
+migration. No live database migration is performed by this change.
+
+Regression test (disposable plain PostgreSQL database only, not Supabase):
+`psql -v ON_ERROR_STOP=1 -f supabase/tests/wallet_audit.sql`.
+The test bootstraps minimal auth objects, checks legacy preservation, valid
+releases, invalid audit states, and retained RLS/write restrictions, then rolls
+back. It does not replace integration or cross-organization RLS tests in Supabase.
 
 ## Supabase authentication guard
 
