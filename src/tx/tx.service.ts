@@ -59,7 +59,7 @@ export class TxService {
 
     const message = tx.serializeMessage();
     const txId = randomUUID();
-    this.pending.save({
+    await this.pending.save({
       txId,
       instruction: body.instruction,
       signer,
@@ -81,7 +81,7 @@ export class TxService {
   }
 
   async submit(body: SubmitTxDto) {
-    const pending = this.pending.get(body.tx_id);
+    const pending = await this.pending.get(body.tx_id);
     if (!pending) {
       throw new HttpException(
         'unknown, used or expired tx_id - call /tx/build again',
@@ -126,7 +126,7 @@ export class TxService {
     }
 
     // 3. Budget + user quota before co-signing.
-    this.budget.assertWithinLimits(
+    await this.budget.assertWithinLimits(
       pending.estimatedLamports,
       pending.signer.toBase58(),
     );
@@ -142,7 +142,7 @@ export class TxService {
       tx,
       pending.lastValidBlockHeight,
     );
-    this.pending.consume(body.tx_id);
+    await this.pending.consume(body.tx_id);
 
     // 5. Record the actual fee-payer balance delta in the daily counter.
     void this.correctSpend(signature, pending.signer.toBase58());
@@ -329,6 +329,6 @@ export class TxService {
     } catch {
       // Can't read the delta: count the tx anyway, spend stays unrecorded.
     }
-    this.budget.recordSpend(actual, signer);
+    await this.budget.recordSpend(actual, signer);
   }
 }

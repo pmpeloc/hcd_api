@@ -41,8 +41,9 @@ const AUTH_USER: AuthenticatedUser = {
   status: 'active',
 };
 
-/** Minimal Supabase mock for the verified-wallet check in build(): the
- * select chain ends in maybeSingle and returns the app_user row. */
+/** Minimal Supabase mock covering the verified-wallet check in build() and
+ * the Postgres-backed pending_tx / fee-payer tables. The query-builder chain
+ * is emulated per table; rpc() implements fee_payer_record. */
 function makeAdminDb(
   opts: {
     appUserWallet?: string | null;
@@ -50,24 +51,115 @@ function makeAdminDb(
     error?: { message: string };
   } = {},
 ) {
+  type Row = Record<string, unknown>;
+  const pendingRows = new Map<string, Row>();
+  const spend = new Map<string, Row>();
+  const quota = new Map<string, Row>();
   const db = {
-    from: () => ({
-      select: () => ({
-        eq: () => ({
-          maybeSingle: () =>
-            Promise.resolve({
-              data: opts.appUserWallet
-                ? {
-                    wallet_pubkey: opts.appUserWallet,
-                    wallet_verified_at:
-                      (opts.verified ?? true) ? '2026-10-08T12:00:00Z' : null,
-                  }
-                : null,
-              error: opts.error ?? null,
+    from: (table: string) => {
+      if (table === 'pending_tx') {
+        return {
+          insert: (row: Row) => {
+            pendingRows.set(row.tx_id as string, { used: false, ...row });
+            return Promise.resolve({ error: null });
+          },
+          select: () => ({
+            eq: (_c: string, id: string) => ({
+              eq: (_c2: string, used: boolean) => ({
+                gt: (_c3: string, now: string) => ({
+                  maybeSingle: () => {
+                    const r = pendingRows.get(id);
+                    const ok =
+                      r &&
+                      r.used === used &&
+                      Date.parse(r.expires_at as string) > Date.parse(now);
+                    return Promise.resolve({ data: ok ? r : null });
+                  },
+                }),
+              }),
             }),
+          }),
+          update: (values: Row) => ({
+            eq: (_c: string, id: string) => ({
+              eq: () => {
+                const r = pendingRows.get(id);
+                if (r) Object.assign(r, values);
+                return Promise.resolve({ error: null });
+              },
+            }),
+          }),
+          delete: () => ({
+            lt: (_c: string, now: string) => {
+              for (const [k, r] of pendingRows) {
+                if (Date.parse(r.expires_at as string) < Date.parse(now)) {
+                  pendingRows.delete(k);
+                }
+              }
+              return Promise.resolve({ error: null });
+            },
+          }),
+        };
+      }
+      if (table === 'fee_payer_spend') {
+        return {
+          select: () => ({
+            eq: (_c: string, day: string) => ({
+              maybeSingle: () =>
+                Promise.resolve({ data: spend.get(day) ?? null }),
+            }),
+          }),
+        };
+      }
+      if (table === 'fee_payer_user_txs') {
+        return {
+          select: () => ({
+            eq: (_c: string, day: string) => ({
+              eq: (_c2: string, signer: string) => ({
+                maybeSingle: () =>
+                  Promise.resolve({
+                    data: quota.get(`${day}:${signer}`) ?? null,
+                  }),
+              }),
+            }),
+          }),
+        };
+      }
+      return {
+        select: () => ({
+          eq: () => ({
+            maybeSingle: () =>
+              Promise.resolve({
+                data: opts.appUserWallet
+                  ? {
+                      wallet_pubkey: opts.appUserWallet,
+                      wallet_verified_at:
+                        (opts.verified ?? true) ? '2026-10-08T12:00:00Z' : null,
+                    }
+                  : null,
+                error: opts.error ?? null,
+              }),
+          }),
         }),
-      }),
-    }),
+      };
+    },
+    rpc: (
+      fn: string,
+      args: { p_day: string; p_lamports: number; p_signer: string },
+    ) => {
+      if (fn === 'fee_payer_record') {
+        const s = (spend.get(args.p_day) ?? {
+          day: args.p_day,
+          lamports: 0,
+        }) as { lamports: number };
+        s.lamports += args.p_lamports;
+        spend.set(args.p_day, s);
+        const k = `${args.p_day}:${args.p_signer}`;
+        const q = (quota.get(k) ?? { tx_count: 0 }) as { tx_count: number };
+        q.tx_count += 1;
+        quota.set(k, q);
+      }
+      return Promise.resolve({ error: null });
+    },
   };
   const admin = { create: () => db } as unknown as SupabaseAdminFactory;
   return { admin };
@@ -80,15 +172,10 @@ function makeService(
   const config = { get: (k: string) => env[k] } as ConfigService;
   const solana = new SolanaService(config);
   const builder = new TxBuilderService(solana);
-  const store = new PendingTxStore();
-  const budget = new FeeBudgetService(config, solana);
-  const service = new TxService(
-    solana,
-    builder,
-    store,
-    budget,
-    admin ?? makeAdminDb().admin,
-  );
+  const db = admin ?? makeAdminDb().admin;
+  const store = new PendingTxStore(db);
+  const budget = new FeeBudgetService(config, solana, db);
+  const service = new TxService(solana, builder, store, budget, db);
   return { solana, builder, store, budget, service };
 }
 
