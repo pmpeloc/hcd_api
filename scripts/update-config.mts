@@ -15,6 +15,12 @@ if (!adminArg || !keyServiceArg || !Number.isInteger(days) || days <= 0) {
 }
 const newAdmin = new web3.PublicKey(adminArg);
 const newKeyService = new web3.PublicKey(keyServiceArg);
+// The program only checks the new pair, so handing the admin role over while
+// making the outgoing admin the key_service would pass on-chain.
+if (newKeyService.equals(admin.publicKey)) {
+  console.error('The current admin cannot become the key_service.');
+  process.exit(1);
+}
 
 const show = (c: any) => ({
   admin: c.admin.toBase58(),

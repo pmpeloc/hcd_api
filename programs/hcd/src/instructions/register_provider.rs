@@ -28,7 +28,7 @@ pub fn handler(
     organization: Pubkey,
 ) -> Result<()> {
     let authority = ctx.accounts.authority.key();
-    // ponytail: the doctor-clinic link is endorsed off-chain and checked by the
+    // The doctor-clinic link is endorsed off-chain and checked by the
     // admin before verifying; on-chain we only reject the obvious mismatches.
     let valid = match provider_type {
         ProviderType::Clinic => organization == authority,
