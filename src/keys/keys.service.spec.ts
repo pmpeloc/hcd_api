@@ -324,8 +324,8 @@ describe('KeysService.release', () => {
     expect(updates[0].values.log_access_status).toBe('failed');
   });
 
-  it('RPC down on log_access -> still delivers, row stays pending', async () => {
-    const { db } = makeDb({
+  it('RPC down on log_access -> 503, nothing delivered, row marked failed', async () => {
+    const { db, updates } = makeDb({
       recordsRow: recordRow(crypto, dek),
       doctorRow: { wallet_pubkey: doctor.publicKey.toBase58() },
     });
@@ -342,10 +342,10 @@ describe('KeysService.release', () => {
       provider: { verified: true },
       sendErr: new Error('fetch failed: connection refused'),
     });
-    const res = await service(db, solana).release(user(), {
-      record_id: RECORD_ID,
-    });
-    expect(res.dek).toBeTruthy();
+    await expect(
+      service(db, solana).release(user(), { record_id: RECORD_ID }),
+    ).rejects.toMatchObject({ status: 503 });
+    expect(updates[0].values.log_access_status).toBe('failed');
   });
 
   it('disputed record -> 403 even for the patient', async () => {

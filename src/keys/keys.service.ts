@@ -62,9 +62,9 @@ const anchorEnum = (v: Record<string, object>): string => Object.keys(v)[0];
  *
  * log_access carries a Memo instruction with the key_releases row id so the
  * on-chain entry is unique and links back to the audit row (decision
- * 2026-10-06). On a program rejection nothing is delivered (the on-chain
- * state is the final word); on pure infra failure the DEK is still released
- * and the row stays `pending` for the retry worker.
+ * 2026-10-06). Fail-closed (decision 2026-10-08): if the log cannot be
+ * confirmed on-chain — program rejection OR infra failure — nothing is
+ * delivered. Without Solana there is no Salua.
  */
 @Injectable()
 export class KeysService implements OnModuleInit {
@@ -244,9 +244,11 @@ export class KeysService implements OnModuleInit {
 
   /**
    * Doctor release: insert the audit row first (we need its id for the Memo),
-   * then send log_access co-signed by key_service + fee_payer.
-   * Program rejection -> row `failed`, throw 403, nothing was delivered.
-   * Infra failure -> row stays `pending`, the DEK is still delivered.
+   * then send log_access co-signed by key_service + fee_payer. Fail-closed:
+   * unless the log confirms on-chain, nothing is delivered.
+   * Program rejection -> row `failed`, 403.
+   * Infra failure    -> row `failed`, 503 (the requester retries the whole
+   *                     release; a pending row is never delivered late).
    */
   private async releaseWithLogAccess(
     db: ReturnType<SupabaseAdminFactory['create']>,
@@ -310,13 +312,19 @@ export class KeysService implements OnModuleInit {
       }
     }
     this.logger.warn(
-      `log_access unreachable for release ${releaseId}; delivered, pending retry`,
+      `log_access unreachable for release ${releaseId}; nothing delivered`,
       lastErr,
     );
     await db
       .from('key_releases')
-      .update({ log_access_attempts: LOG_ACCESS_RETRIES })
+      .update({
+        log_access_status: 'failed',
+        log_access_attempts: LOG_ACCESS_RETRIES,
+      })
       .eq('id', releaseId);
+    throw new ServiceUnavailableException(
+      'Solana is unreachable; the access could not be logged on-chain',
+    );
   }
 
   private async sendLogAccess(
