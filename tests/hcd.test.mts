@@ -796,3 +796,137 @@ describe('update_config', () => {
     assert.equal(config.maxGrantDurationSecs.toNumber(), 7 * ONE_DAY);
   });
 });
+
+// One patient and one doctor through the whole lifecycle, in order. On devnet
+// it prints explorer links to the transactions (used in the final submission).
+describe('full journey', () => {
+  const clinic = Keypair.generate();
+  const doctor = Keypair.generate();
+  const patient = Keypair.generate();
+  const record0 = recordPda(patient.publicKey, 0);
+  const record1 = recordPda(patient.publicKey, 1);
+  const grantPda = (record: web3.PublicKey) =>
+    pda(Buffer.from('grant'), record.toBuffer(), doctor.publicKey.toBuffer());
+  const txs: [string, string][] = [];
+  const step = async (label: string, tx: Promise<string>) => txs.push([label, await tx]);
+
+  const issue = (record: web3.PublicKey, supersedes: web3.PublicKey | null) =>
+    program.methods
+      .issueRecord(Array(32).fill(7), randomUUID())
+      .accountsPartial({
+        payer: admin,
+        issuer: doctor.publicKey,
+        keyService: keyService.publicKey,
+        config: configPda,
+        issuerProvider: providerPda(doctor.publicKey),
+        patientProfile: patientPda(patient.publicKey),
+        record,
+        supersededRecord: supersedes,
+      })
+      .signers([doctor, keyService])
+      .rpc();
+
+  const grant = async (record: web3.PublicKey) => {
+    const now = (await provider.connection.getBlockTime(await provider.connection.getSlot()))!;
+    return program.methods
+      .grantAccess(doctor.publicKey, new BN(now + ONE_DAY))
+      .accountsPartial({
+        payer: admin,
+        patient: patient.publicKey,
+        config: configPda,
+        record,
+        doctorProvider: providerPda(doctor.publicKey),
+        grant: grantPda(record),
+      })
+      .signers([patient])
+      .rpc();
+  };
+
+  // Distinct compute unit limit per call so repeated logs are not deduplicated.
+  let logNonce = 0;
+  const logAccess = (record: web3.PublicKey) =>
+    program.methods
+      .logAccess()
+      .accountsPartial({
+        keyService: keyService.publicKey,
+        config: configPda,
+        grant: grantPda(record),
+        record,
+        doctorProvider: providerPda(doctor.publicKey),
+      })
+      .preInstructions([ComputeBudgetProgram.setComputeUnitLimit({ units: 210_000 + ++logNonce })])
+      .signers([keyService])
+      .rpc();
+
+  const status = async (record: web3.PublicKey) =>
+    Object.keys((await program.account.record.fetch(record)).status)[0];
+  const grantOf = (record: web3.PublicKey) => program.account.accessGrant.fetch(grantPda(record));
+
+  it('onboards a verified doctor and a patient', async () => {
+    await step('register clinic', registerProvider(clinic, { clinic: {} }, clinic.publicKey));
+    await step('register doctor', registerProvider(doctor, { doctor: {} }, clinic.publicKey));
+    await step('verify doctor', setVerified(null, doctor.publicKey, true));
+    await step('register patient', registerPatient(patient));
+  });
+
+  it('the doctor issues a record', async () => {
+    await step('issue_record', issue(record0, null));
+    assert.equal(await status(record0), 'active');
+  });
+
+  it('the patient grants access and each access is logged', async () => {
+    await step('grant_access', grant(record0));
+    await step('log_access', logAccess(record0));
+    await step('log_access (2nd)', logAccess(record0));
+    assert.equal((await grantOf(record0)).accessCount.toNumber(), 2);
+  });
+
+  it('the patient revokes and further access is refused', async () => {
+    await step(
+      'revoke_access',
+      program.methods
+        .revokeAccess()
+        .accountsPartial({ patient: patient.publicKey, grant: grantPda(record0) })
+        .signers([patient])
+        .rpc(),
+    );
+    assert.deepEqual((await grantOf(record0)).status, { revoked: {} });
+    await expectError(logAccess(record0), 'GrantNotActive');
+  });
+
+  it('the patient disputes, the doctor voids and re-issues', async () => {
+    await step(
+      'dispute_record',
+      program.methods
+        .disputeRecord()
+        .accountsPartial({ patient: patient.publicKey, record: record0 })
+        .signers([patient])
+        .rpc(),
+    );
+    await step(
+      'void_record',
+      program.methods
+        .voidRecord()
+        .accountsPartial({ issuer: doctor.publicKey, record: record0 })
+        .signers([doctor])
+        .rpc(),
+    );
+    assert.equal(await status(record0), 'voided');
+    await step('issue_record (supersedes)', issue(record1, record0));
+    const r1 = await program.account.record.fetch(record1);
+    assert.equal(Object.keys(r1.status)[0], 'active');
+    assert.ok(r1.supersedes?.equals(record0));
+  });
+
+  it('access works on the new record and stays closed on the voided one', async () => {
+    await step('grant_access (new record)', grant(record1));
+    await step('log_access (new record)', logAccess(record1));
+    assert.equal((await grantOf(record1)).accessCount.toNumber(), 1);
+    await expectError(grant(record0), 'RecordNotActive');
+  });
+
+  it('prints explorer links', { skip: !onDevnet }, () => {
+    for (const [label, sig] of txs)
+      console.log(`${label}: https://explorer.solana.com/tx/${sig}?cluster=devnet`);
+  });
+});
