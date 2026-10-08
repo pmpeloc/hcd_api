@@ -8,6 +8,8 @@ import { TxService } from './tx.service';
 import { PendingTxStore } from './pending-tx.store';
 import { FeeBudgetService } from './fee-budget.service';
 import { buildTxSchema } from './tx-schemas';
+import { SupabaseAdminFactory } from '../auth/supabase-admin.factory';
+import type { AuthenticatedUser } from '../auth/authenticated-request';
 
 const { web3 } = anchor;
 const { Keypair, Transaction } = web3;
@@ -30,13 +32,75 @@ const makeEnv = (
   ...extra,
 });
 
-function makeService(env: Record<string, string>) {
+const AUTH_USER: AuthenticatedUser = {
+  id: '00000000-0000-4000-8000-000000000001',
+  role: 'patient',
+  organizationId: null,
+  status: 'active',
+};
+
+/** Minimal Supabase mock for the wallet-ownership check in build(): the
+ * select chain ends in maybeSingle per table/column, the update chain ends
+ * in .is() and records what it wrote. */
+function makeAdminDb(
+  opts: {
+    appUserWallet?: string | null;
+    doctorWallet?: string | null;
+    holderId?: string;
+  } = {},
+) {
+  const updates: { values: unknown }[] = [];
+  const db = {
+    from: (table: string) => ({
+      select: () => ({
+        eq: (col: string) => ({
+          maybeSingle: () =>
+            Promise.resolve({
+              data:
+                table === 'doctors'
+                  ? opts.doctorWallet
+                    ? { wallet_pubkey: opts.doctorWallet }
+                    : null
+                  : col === 'wallet_pubkey'
+                    ? opts.holderId
+                      ? { id: opts.holderId }
+                      : null
+                    : opts.appUserWallet
+                      ? { wallet_pubkey: opts.appUserWallet }
+                      : null,
+            }),
+        }),
+      }),
+      update: (values: unknown) => ({
+        eq: () => ({
+          is: () => {
+            updates.push({ values });
+            return Promise.resolve({ error: null });
+          },
+        }),
+      }),
+    }),
+  };
+  const admin = { create: () => db } as unknown as SupabaseAdminFactory;
+  return { admin, updates };
+}
+
+function makeService(
+  env: Record<string, string>,
+  admin?: SupabaseAdminFactory,
+) {
   const config = { get: (k: string) => env[k] } as ConfigService;
   const solana = new SolanaService(config);
   const builder = new TxBuilderService(solana);
   const store = new PendingTxStore();
   const budget = new FeeBudgetService(config, solana);
-  const service = new TxService(solana, builder, store, budget);
+  const service = new TxService(
+    solana,
+    builder,
+    store,
+    budget,
+    admin ?? makeAdminDb().admin,
+  );
   return { solana, builder, store, budget, service };
 }
 
@@ -55,7 +119,10 @@ describe('TxService', () => {
   });
 
   beforeEach(() => {
-    ({ solana, service } = makeService(makeEnv(feePayer, keyService)));
+    ({ solana, service } = makeService(
+      makeEnv(feePayer, keyService),
+      makeAdminDb({ appUserWallet: user.publicKey.toBase58() }).admin,
+    ));
     jest.spyOn(solana.connection, 'getLatestBlockhash').mockResolvedValue({
       blockhash: kp().publicKey.toBase58(),
       lastValidBlockHeight: 100,
@@ -73,14 +140,14 @@ describe('TxService', () => {
   });
 
   const buildAndSign = async (body = disputeBody(), signer = user) => {
-    const built = await service.build(body);
+    const built = await service.build(AUTH_USER, body);
     const tx = Transaction.from(Buffer.from(built.tx_base64, 'base64'));
     tx.partialSign(signer);
     return { tx_id: built.tx_id, signed_tx_base64: b64(tx), tx };
   };
 
   it('builds a tx with the backend fee payer and stores the message', async () => {
-    const built = await service.build(disputeBody());
+    const built = await service.build(AUTH_USER, disputeBody());
     const tx = Transaction.from(Buffer.from(built.tx_base64, 'base64'));
     expect(tx.feePayer?.equals(feePayer.publicKey)).toBe(true);
     expect(built.tx_base64).toBeTruthy();
@@ -98,9 +165,9 @@ describe('TxService', () => {
   });
 
   it('rejects a tampered transaction byte-by-byte with 403', async () => {
-    const built = await service.build(disputeBody());
+    const built = await service.build(AUTH_USER, disputeBody());
     // A DIFFERENT valid transaction signed by the same user.
-    const other = await service.build({
+    const other = await service.build(AUTH_USER, {
       instruction: 'revoke_access',
       signer: user.publicKey.toBase58(),
       args: { grant: kp().publicKey.toBase58() },
@@ -113,7 +180,7 @@ describe('TxService', () => {
   });
 
   it('rejects when the user signature is missing (400)', async () => {
-    const built = await service.build(disputeBody());
+    const built = await service.build(AUTH_USER, disputeBody());
     await expect(
       service.submit({ tx_id: built.tx_id, signed_tx_base64: built.tx_base64 }),
     ).rejects.toMatchObject({ status: 400 });
@@ -122,7 +189,7 @@ describe('TxService', () => {
   it('rejects a signature from a different wallet (400)', async () => {
     // Attacker signs the exact same message with a different key and drops
     // the signature into the expected signer's slot.
-    const built = await service.build(disputeBody());
+    const built = await service.build(AUTH_USER, disputeBody());
     const tx = Transaction.from(Buffer.from(built.tx_base64, 'base64'));
     const wrong = kp();
     const key = createPrivateKey({
@@ -163,6 +230,7 @@ describe('TxService', () => {
   it('daily budget exhausted -> 429 before co-signing', async () => {
     ({ solana, service } = makeService(
       makeEnv(feePayer, keyService, { TX_DAILY_BUDGET_LAMPORTS: '10' }),
+      makeAdminDb({ appUserWallet: user.publicKey.toBase58() }).admin,
     ));
     jest.spyOn(solana.connection, 'getLatestBlockhash').mockResolvedValue({
       blockhash: kp().publicKey.toBase58(),
@@ -184,7 +252,7 @@ describe('TxService', () => {
       .spyOn(solana.program.account.patientProfile, 'fetch')
       .mockResolvedValue({ nextRecordId: { toNumber: () => 0 } });
     const patient = kp();
-    const built = await service.build({
+    const built = await service.build(AUTH_USER, {
       instruction: 'issue_record',
       signer: user.publicKey.toBase58(),
       args: {
@@ -211,7 +279,7 @@ describe('TxService', () => {
       .spyOn(solana.program.account.patientProfile, 'fetch')
       .mockRejectedValue(new Error('Account does not exist'));
     await expect(
-      service.build({
+      service.build(AUTH_USER, {
         instruction: 'issue_record',
         signer: user.publicKey.toBase58(),
         args: {
@@ -259,7 +327,7 @@ describe('TxService', () => {
 
   it('grant_access rejects a past expires_at', async () => {
     await expect(
-      service.build({
+      service.build(AUTH_USER, {
         instruction: 'grant_access',
         signer: user.publicKey.toBase58(),
         args: {
@@ -269,5 +337,50 @@ describe('TxService', () => {
         },
       }),
     ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it('rejects a signer that is not a wallet of the user (403)', async () => {
+    ({ solana, service } = makeService(
+      makeEnv(feePayer, keyService),
+      makeAdminDb({ appUserWallet: kp().publicKey.toBase58() }).admin,
+    ));
+    jest.spyOn(solana.connection, 'getLatestBlockhash').mockResolvedValue({
+      blockhash: kp().publicKey.toBase58(),
+      lastValidBlockHeight: 100,
+    });
+    await expect(service.build(AUTH_USER, disputeBody())).rejects.toMatchObject(
+      { status: 403 },
+    );
+  });
+
+  it('binds the first signer as wallet_pubkey when none is registered', async () => {
+    const { admin, updates } = makeAdminDb({ appUserWallet: null });
+    ({ solana, service } = makeService(makeEnv(feePayer, keyService), admin));
+    jest.spyOn(solana.connection, 'getLatestBlockhash').mockResolvedValue({
+      blockhash: kp().publicKey.toBase58(),
+      lastValidBlockHeight: 100,
+    });
+    const built = await service.build(AUTH_USER, disputeBody());
+    expect(built.tx_base64).toBeTruthy();
+    expect(updates[0].values).toMatchObject({
+      wallet_pubkey: user.publicKey.toBase58(),
+    });
+  });
+
+  it('refuses to bind a wallet already bound to another account (403)', async () => {
+    ({ solana, service } = makeService(
+      makeEnv(feePayer, keyService),
+      makeAdminDb({
+        appUserWallet: null,
+        holderId: '00000000-0000-4000-8000-0000000000ff',
+      }).admin,
+    ));
+    jest.spyOn(solana.connection, 'getLatestBlockhash').mockResolvedValue({
+      blockhash: kp().publicKey.toBase58(),
+      lastValidBlockHeight: 100,
+    });
+    await expect(service.build(AUTH_USER, disputeBody())).rejects.toMatchObject(
+      { status: 403 },
+    );
   });
 });

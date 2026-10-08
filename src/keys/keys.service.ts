@@ -11,7 +11,7 @@ import { ConfigService } from '@nestjs/config';
 import { TransactionInstruction } from '@solana/web3.js';
 import { SolanaService, PublicKey } from '../tx/solana.service';
 import { KeyCryptoService } from './key-crypto.service';
-import { SupabaseAdminFactory } from './supabase-admin.factory';
+import { SupabaseAdminFactory } from '../auth/supabase-admin.factory';
 import type { AuthenticatedUser } from '../auth/authenticated-request';
 import { keyReleaseIdSchema, recordRowSchema } from './keys-schemas';
 import type { RecordRow, ReleaseKeyDto } from './keys-schemas';

@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { AuthModule } from '../auth/auth.module';
 import { TxController } from './tx.controller';
 import { TxService } from './tx.service';
 import { TxBuilderService } from './tx-builder.service';
@@ -13,6 +14,7 @@ import { FeeBudgetService } from './fee-budget.service';
 // internally (with a Memo carrying the key_releases row id) on every key
 // release. Admin instructions are scripts, not endpoints.
 @Module({
+  imports: [AuthModule],
   controllers: [TxController],
   providers: [
     TxService,

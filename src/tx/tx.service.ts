@@ -7,6 +7,8 @@ import { SolanaService } from './solana.service';
 import { TxBuilderService } from './tx-builder.service';
 import { PendingTxStore } from './pending-tx.store';
 import { FeeBudgetService } from './fee-budget.service';
+import { SupabaseAdminFactory } from '../auth/supabase-admin.factory';
+import type { AuthenticatedUser } from '../auth/authenticated-request';
 import type { BuildTxDto, SubmitTxDto } from './tx-schemas';
 
 const { web3 } = anchor;
@@ -43,11 +45,13 @@ export class TxService {
     private readonly builder: TxBuilderService,
     private readonly pending: PendingTxStore,
     private readonly budget: FeeBudgetService,
+    private readonly admin: SupabaseAdminFactory,
   ) {}
 
-  async build(body: BuildTxDto) {
+  async build(user: AuthenticatedUser, body: BuildTxDto) {
     const { tx, signer, needsKeyService, estimatedLamports } =
       await this.builder.build(body);
+    await this.assertSignerOwned(user, signer);
 
     const { blockhash, lastValidBlockHeight } = await this.getLatestBlockhash();
     tx.feePayer = this.solana.feePayer.publicKey;
@@ -170,6 +174,69 @@ export class TxService {
       throw new HttpException(
         `rpc unavailable: ${(e as Error).message}`,
         HttpStatus.SERVICE_UNAVAILABLE,
+      );
+    }
+  }
+
+  /**
+   * The declared signer must be a wallet of the authenticated user:
+   * app_user.wallet_pubkey or, for doctors, doctors.wallet_pubkey. If the
+   * user has no wallet registered yet, the first signer they present is
+   * bound to their account (null -> set, never overwrite) and enforced on
+   * every later call. A wallet already bound to another account is refused.
+   */
+  private async assertSignerOwned(
+    user: AuthenticatedUser,
+    signer: anchor.web3.PublicKey,
+  ) {
+    const db = this.admin.create();
+    const signerStr = signer.toBase58();
+    const [{ data: appUser }, { data: doctor }, { data: holder }] =
+      await Promise.all([
+        db
+          .from('app_user')
+          .select('wallet_pubkey')
+          .eq('id', user.id)
+          .maybeSingle(),
+        db
+          .from('doctors')
+          .select('wallet_pubkey')
+          .eq('user_id', user.id)
+          .maybeSingle(),
+        db
+          .from('app_user')
+          .select('id')
+          .eq('wallet_pubkey', signerStr)
+          .maybeSingle(),
+      ]);
+    const owned = [appUser?.wallet_pubkey, doctor?.wallet_pubkey].filter(
+      (w): w is string => typeof w === 'string' && w.length > 0,
+    );
+    if (owned.includes(signerStr)) return;
+    if (owned.length > 0) {
+      throw new HttpException(
+        'signer is not a wallet of the authenticated user',
+        HttpStatus.FORBIDDEN,
+      );
+    }
+    if (holder && holder.id !== user.id) {
+      throw new HttpException(
+        'wallet is already bound to another account',
+        HttpStatus.FORBIDDEN,
+      );
+    }
+    // First transaction for this user: bind the wallet they are about to
+    // sign with. Empty string for the second .eq() would match nothing, so
+    // .is() is required for a NULL-safe "only if not already set".
+    const { error } = await db
+      .from('app_user')
+      .update({ wallet_pubkey: signerStr })
+      .eq('id', user.id)
+      .is('wallet_pubkey', null);
+    if (error) {
+      throw new HttpException(
+        'wallet binding failed',
+        HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
   }
