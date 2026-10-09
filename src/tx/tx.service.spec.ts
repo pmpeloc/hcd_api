@@ -47,6 +47,7 @@ function makeAdminDb(
   opts: {
     appUserWallet?: string | null;
     verified?: boolean;
+    error?: { message: string };
   } = {},
 ) {
   const db = {
@@ -62,6 +63,7 @@ function makeAdminDb(
                       (opts.verified ?? true) ? '2026-10-08T12:00:00Z' : null,
                   }
                 : null,
+              error: opts.error ?? null,
             }),
         }),
       }),
@@ -359,6 +361,16 @@ describe('TxService', () => {
     ));
     await expect(service.build(AUTH_USER, disputeBody())).rejects.toMatchObject(
       { status: 403 },
+    );
+  });
+
+  it('fails closed with 503 when the identity lookup errors', async () => {
+    ({ solana, service } = makeService(
+      makeEnv(feePayer, keyService),
+      makeAdminDb({ error: { message: 'connection refused' } }).admin,
+    ));
+    await expect(service.build(AUTH_USER, disputeBody())).rejects.toMatchObject(
+      { status: 503 },
     );
   });
 });

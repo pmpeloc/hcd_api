@@ -190,11 +190,19 @@ export class TxService {
     signer: anchor.web3.PublicKey,
   ) {
     const db = this.admin.create();
-    const { data: appUser } = await db
+    const { data: appUser, error } = await db
       .from('app_user')
       .select('wallet_pubkey, wallet_verified_at')
       .eq('id', user.id)
       .maybeSingle();
+    if (error) {
+      // A failed identity read is not "no wallet": fail closed with 503 so
+      // callers can retry instead of being told they are not enrolled.
+      throw new HttpException(
+        'identity lookup unavailable',
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
+    }
     if (
       appUser?.wallet_verified_at &&
       appUser.wallet_pubkey === signer.toBase58()
