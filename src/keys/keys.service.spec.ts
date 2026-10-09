@@ -239,7 +239,10 @@ describe('KeysService.release', () => {
   it('patient gets the DEK, row is skipped, no log_access tx', async () => {
     const { db, inserts } = makeDb({
       recordsRow: recordRow(crypto, dek),
-      appUserRow: { wallet_pubkey: patient.publicKey.toBase58() },
+      appUserRow: {
+        wallet_pubkey: patient.publicKey.toBase58(),
+        wallet_verified_at: '2026-10-08T12:00:00Z',
+      },
     });
     const solana = makeSolana({ record: activeRecord });
     const res = await service(db, solana).release(user(), {
@@ -257,7 +260,10 @@ describe('KeysService.release', () => {
   it('issuer gets the DEK without log_access', async () => {
     const { db, inserts } = makeDb({
       recordsRow: recordRow(crypto, dek),
-      doctorRow: { wallet_pubkey: issuer.publicKey.toBase58() },
+      appUserRow: {
+        wallet_pubkey: issuer.publicKey.toBase58(),
+        wallet_verified_at: '2026-10-08T12:00:00Z',
+      },
     });
     const res = await service(db, makeSolana({ record: activeRecord })).release(
       user(),
@@ -270,7 +276,10 @@ describe('KeysService.release', () => {
   it('doctor with a live grant: log_access confirmed with tx_signature', async () => {
     const { db, inserts, updates } = makeDb({
       recordsRow: recordRow(crypto, dek),
-      doctorRow: { wallet_pubkey: doctor.publicKey.toBase58() },
+      appUserRow: {
+        wallet_pubkey: doctor.publicKey.toBase58(),
+        wallet_verified_at: '2026-10-08T12:00:00Z',
+      },
       releaseId: 42,
     });
     const solana = makeSolana({
@@ -303,7 +312,10 @@ describe('KeysService.release', () => {
   it('program rejection -> 403, row marked failed, nothing delivered', async () => {
     const { db, updates } = makeDb({
       recordsRow: recordRow(crypto, dek),
-      doctorRow: { wallet_pubkey: doctor.publicKey.toBase58() },
+      appUserRow: {
+        wallet_pubkey: doctor.publicKey.toBase58(),
+        wallet_verified_at: '2026-10-08T12:00:00Z',
+      },
     });
     const solana = makeSolana({
       record: activeRecord,
@@ -327,7 +339,10 @@ describe('KeysService.release', () => {
   it('RPC down on log_access -> 503, nothing delivered, row marked failed', async () => {
     const { db, updates } = makeDb({
       recordsRow: recordRow(crypto, dek),
-      doctorRow: { wallet_pubkey: doctor.publicKey.toBase58() },
+      appUserRow: {
+        wallet_pubkey: doctor.publicKey.toBase58(),
+        wallet_verified_at: '2026-10-08T12:00:00Z',
+      },
     });
     const solana = makeSolana({
       record: activeRecord,
@@ -351,13 +366,31 @@ describe('KeysService.release', () => {
   it('disputed record -> 403 even for the patient', async () => {
     const { db } = makeDb({
       recordsRow: recordRow(crypto, dek),
-      appUserRow: { wallet_pubkey: patient.publicKey.toBase58() },
+      appUserRow: {
+        wallet_pubkey: patient.publicKey.toBase58(),
+        wallet_verified_at: '2026-10-08T12:00:00Z',
+      },
     });
     const solana = makeSolana({
       record: { ...activeRecord, status: { disputed: {} } },
     });
     await expect(
       service(db, solana).release(user(), { record_id: RECORD_ID }),
+    ).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('stored but unverified wallet -> 403 (enrollment never ran)', async () => {
+    const { db } = makeDb({
+      recordsRow: recordRow(crypto, dek),
+      appUserRow: {
+        wallet_pubkey: patient.publicKey.toBase58(),
+        wallet_verified_at: null,
+      },
+    });
+    await expect(
+      service(db, makeSolana({ record: activeRecord })).release(user(), {
+        record_id: RECORD_ID,
+      }),
     ).rejects.toMatchObject({ status: 403 });
   });
 
@@ -371,7 +404,10 @@ describe('KeysService.release', () => {
   it('stranger wallet -> 403', async () => {
     const { db } = makeDb({
       recordsRow: recordRow(crypto, dek),
-      appUserRow: { wallet_pubkey: stranger.publicKey.toBase58() },
+      appUserRow: {
+        wallet_pubkey: stranger.publicKey.toBase58(),
+        wallet_verified_at: '2026-10-08T12:00:00Z',
+      },
     });
     await expect(
       service(db, makeSolana({ record: activeRecord })).release(user(), {
@@ -386,7 +422,10 @@ describe('KeysService.release', () => {
   ])('doctor with %s grant -> 403', async (_name, status, expiresAt) => {
     const { db } = makeDb({
       recordsRow: recordRow(crypto, dek),
-      doctorRow: { wallet_pubkey: doctor.publicKey.toBase58() },
+      appUserRow: {
+        wallet_pubkey: doctor.publicKey.toBase58(),
+        wallet_verified_at: '2026-10-08T12:00:00Z',
+      },
     });
     const solana = makeSolana({
       record: activeRecord,
@@ -408,7 +447,10 @@ describe('KeysService.release', () => {
   it('doctor with grant but suspended provider -> 403', async () => {
     const { db } = makeDb({
       recordsRow: recordRow(crypto, dek),
-      doctorRow: { wallet_pubkey: doctor.publicKey.toBase58() },
+      appUserRow: {
+        wallet_pubkey: doctor.publicKey.toBase58(),
+        wallet_verified_at: '2026-10-08T12:00:00Z',
+      },
     });
     const solana = makeSolana({
       record: activeRecord,
@@ -433,7 +475,10 @@ describe('KeysService.release', () => {
         ...recordRow(crypto, dek),
         wrapped_dek: '\\x' + 'ff'.repeat(10),
       },
-      appUserRow: { wallet_pubkey: patient.publicKey.toBase58() },
+      appUserRow: {
+        wallet_pubkey: patient.publicKey.toBase58(),
+        wallet_verified_at: '2026-10-08T12:00:00Z',
+      },
     });
     await expect(
       service(db, makeSolana({ record: activeRecord })).release(user(), {

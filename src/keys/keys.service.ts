@@ -191,33 +191,31 @@ export class KeysService implements OnModuleInit {
     return response;
   }
 
-  /** Wallets this requester can claim: their app_user wallet plus, for
-   * doctors, the provider wallet enrolled on-chain. */
+  /** The only wallet this requester can claim is the one they enrolled
+   * through /auth/wallet/verify: app_user.wallet_pubkey with a non-null
+   * wallet_verified_at. A bare wallet_pubkey (legacy or doctors row) is
+   * not proof of possession, so unverified wallets get no grants. */
   private async requesterWallets(
     db: ReturnType<SupabaseAdminFactory['create']>,
     user: AuthenticatedUser,
   ): Promise<PublicKey[]> {
-    const out: PublicKey[] = [];
     const { data: appUser } = (await db
       .from('app_user')
-      .select('wallet_pubkey')
+      .select('wallet_pubkey, wallet_verified_at')
       .eq('id', user.id)
-      .maybeSingle()) as { data: { wallet_pubkey?: string | null } | null };
-    const { data: doctor } = (await db
-      .from('doctors')
-      .select('wallet_pubkey')
-      .eq('user_id', user.id)
-      .maybeSingle()) as { data: { wallet_pubkey?: string | null } | null };
-    for (const w of [appUser?.wallet_pubkey, doctor?.wallet_pubkey]) {
-      if (typeof w === 'string' && w.length > 0) {
-        try {
-          out.push(new PublicKey(w));
-        } catch {
-          this.logger.warn(`Ignoring malformed wallet_pubkey for ${user.id}`);
-        }
-      }
+      .maybeSingle()) as {
+      data: {
+        wallet_pubkey?: string | null;
+        wallet_verified_at?: string | null;
+      } | null;
+    };
+    if (!appUser?.wallet_verified_at || !appUser.wallet_pubkey) return [];
+    try {
+      return [new PublicKey(appUser.wallet_pubkey)];
+    } catch {
+      this.logger.warn(`Ignoring malformed wallet_pubkey for ${user.id}`);
+      return [];
     }
-    return out;
   }
 
   private async findActiveGrant(
