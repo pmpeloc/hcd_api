@@ -15,6 +15,29 @@ const { web3 } = anchor;
 const { Keypair, Transaction } = web3;
 
 const kp = () => Keypair.generate();
+
+/** Signs the first-use binding challenge with the wallet, like the app's
+ * Privy signMessage does: `salua:bind-wallet:<userId>:<signer>:<ts>`. */
+function walletProof(signer: anchor.web3.Keypair, userId: string, ts?: number) {
+  const issuedAt = ts ?? Math.floor(Date.now() / 1000);
+  const message = Buffer.from(
+    `salua:bind-wallet:${userId}:${signer.publicKey.toBase58()}:${issuedAt}`,
+  );
+  const key = createPrivateKey({
+    key: {
+      kty: 'OKP',
+      crv: 'Ed25519',
+      // Solana secretKey = 64 bytes: 32-byte seed || 32-byte public key.
+      d: Buffer.from(signer.secretKey.slice(0, 32)).toString('base64url'),
+      x: Buffer.from(signer.publicKey.toBytes()).toString('base64url'),
+    },
+    format: 'jwk',
+  });
+  return {
+    wallet_proof: cryptoSign(null, message, key).toString('base64'),
+    wallet_proof_ts: issuedAt,
+  };
+}
 const b64 = (tx: anchor.web3.Transaction) =>
   tx
     .serialize({ requireAllSignatures: false, verifySignatures: false })
@@ -360,11 +383,45 @@ describe('TxService', () => {
       blockhash: kp().publicKey.toBase58(),
       lastValidBlockHeight: 100,
     });
-    const built = await service.build(AUTH_USER, disputeBody());
+    const built = await service.build(AUTH_USER, {
+      ...disputeBody(),
+      ...walletProof(user, AUTH_USER.id),
+    });
     expect(built.tx_base64).toBeTruthy();
     expect(updates[0].values).toMatchObject({
       wallet_pubkey: user.publicKey.toBase58(),
     });
+  });
+
+  it('refuses to bind without a wallet proof (400)', async () => {
+    const { admin } = makeAdminDb({ appUserWallet: null });
+    ({ solana, service } = makeService(makeEnv(feePayer, keyService), admin));
+    await expect(service.build(AUTH_USER, disputeBody())).rejects.toMatchObject(
+      { status: 400 },
+    );
+  });
+
+  it('refuses a wallet proof signed by a different key (403)', async () => {
+    const { admin } = makeAdminDb({ appUserWallet: null });
+    ({ solana, service } = makeService(makeEnv(feePayer, keyService), admin));
+    await expect(
+      service.build(AUTH_USER, {
+        ...disputeBody(),
+        ...walletProof(kp(), AUTH_USER.id), // signed by another wallet
+      }),
+    ).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('refuses a stale wallet proof timestamp (403)', async () => {
+    const { admin } = makeAdminDb({ appUserWallet: null });
+    ({ solana, service } = makeService(makeEnv(feePayer, keyService), admin));
+    const stale = Math.floor(Date.now() / 1000) - 600;
+    await expect(
+      service.build(AUTH_USER, {
+        ...disputeBody(),
+        ...walletProof(user, AUTH_USER.id, stale),
+      }),
+    ).rejects.toMatchObject({ status: 403 });
   });
 
   it('refuses to bind a wallet already bound to another account (403)', async () => {
