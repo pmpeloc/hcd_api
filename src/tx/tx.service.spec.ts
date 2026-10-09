@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { createPrivateKey, sign as cryptoSign } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
+
 import * as anchor from '@anchor-lang/core';
 import { SolanaService } from './solana.service';
 import { TxBuilderService } from './tx-builder.service';
@@ -16,28 +17,6 @@ const { Keypair, Transaction } = web3;
 
 const kp = () => Keypair.generate();
 
-/** Signs the first-use binding challenge with the wallet, like the app's
- * Privy signMessage does: `salua:bind-wallet:<userId>:<signer>:<ts>`. */
-function walletProof(signer: anchor.web3.Keypair, userId: string, ts?: number) {
-  const issuedAt = ts ?? Math.floor(Date.now() / 1000);
-  const message = Buffer.from(
-    `salua:bind-wallet:${userId}:${signer.publicKey.toBase58()}:${issuedAt}`,
-  );
-  const key = createPrivateKey({
-    key: {
-      kty: 'OKP',
-      crv: 'Ed25519',
-      // Solana secretKey = 64 bytes: 32-byte seed || 32-byte public key.
-      d: Buffer.from(signer.secretKey.slice(0, 32)).toString('base64url'),
-      x: Buffer.from(signer.publicKey.toBytes()).toString('base64url'),
-    },
-    format: 'jwk',
-  });
-  return {
-    wallet_proof: cryptoSign(null, message, key).toString('base64'),
-    wallet_proof_ts: issuedAt,
-  };
-}
 const b64 = (tx: anchor.web3.Transaction) =>
   tx
     .serialize({ requireAllSignatures: false, verifySignatures: false })
@@ -62,50 +41,34 @@ const AUTH_USER: AuthenticatedUser = {
   status: 'active',
 };
 
-/** Minimal Supabase mock for the wallet-ownership check in build(): the
- * select chain ends in maybeSingle per table/column, the update chain ends
- * in .is() and records what it wrote. */
+/** Minimal Supabase mock for the verified-wallet check in build(): the
+ * select chain ends in maybeSingle and returns the app_user row. */
 function makeAdminDb(
   opts: {
     appUserWallet?: string | null;
-    doctorWallet?: string | null;
-    holderId?: string;
+    verified?: boolean;
   } = {},
 ) {
-  const updates: { values: unknown }[] = [];
   const db = {
-    from: (table: string) => ({
+    from: () => ({
       select: () => ({
-        eq: (col: string) => ({
+        eq: () => ({
           maybeSingle: () =>
             Promise.resolve({
-              data:
-                table === 'doctors'
-                  ? opts.doctorWallet
-                    ? { wallet_pubkey: opts.doctorWallet }
-                    : null
-                  : col === 'wallet_pubkey'
-                    ? opts.holderId
-                      ? { id: opts.holderId }
-                      : null
-                    : opts.appUserWallet
-                      ? { wallet_pubkey: opts.appUserWallet }
-                      : null,
+              data: opts.appUserWallet
+                ? {
+                    wallet_pubkey: opts.appUserWallet,
+                    wallet_verified_at:
+                      (opts.verified ?? true) ? '2026-10-08T12:00:00Z' : null,
+                  }
+                : null,
             }),
-        }),
-      }),
-      update: (values: unknown) => ({
-        eq: () => ({
-          is: () => {
-            updates.push({ values });
-            return Promise.resolve({ error: null });
-          },
         }),
       }),
     }),
   };
   const admin = { create: () => db } as unknown as SupabaseAdminFactory;
-  return { admin, updates };
+  return { admin };
 }
 
 function makeService(
@@ -362,7 +325,7 @@ describe('TxService', () => {
     ).rejects.toMatchObject({ status: 400 });
   });
 
-  it('rejects a signer that is not a wallet of the user (403)', async () => {
+  it('rejects a signer that is not the enrolled wallet (403)', async () => {
     ({ solana, service } = makeService(
       makeEnv(feePayer, keyService),
       makeAdminDb({ appUserWallet: kp().publicKey.toBase58() }).admin,
@@ -376,66 +339,24 @@ describe('TxService', () => {
     );
   });
 
-  it('binds the first signer as wallet_pubkey when none is registered', async () => {
-    const { admin, updates } = makeAdminDb({ appUserWallet: null });
-    ({ solana, service } = makeService(makeEnv(feePayer, keyService), admin));
-    jest.spyOn(solana.connection, 'getLatestBlockhash').mockResolvedValue({
-      blockhash: kp().publicKey.toBase58(),
-      lastValidBlockHeight: 100,
-    });
-    const built = await service.build(AUTH_USER, {
-      ...disputeBody(),
-      ...walletProof(user, AUTH_USER.id),
-    });
-    expect(built.tx_base64).toBeTruthy();
-    expect(updates[0].values).toMatchObject({
-      wallet_pubkey: user.publicKey.toBase58(),
-    });
-  });
-
-  it('refuses to bind without a wallet proof (400)', async () => {
-    const { admin } = makeAdminDb({ appUserWallet: null });
-    ({ solana, service } = makeService(makeEnv(feePayer, keyService), admin));
-    await expect(service.build(AUTH_USER, disputeBody())).rejects.toMatchObject(
-      { status: 400 },
-    );
-  });
-
-  it('refuses a wallet proof signed by a different key (403)', async () => {
-    const { admin } = makeAdminDb({ appUserWallet: null });
-    ({ solana, service } = makeService(makeEnv(feePayer, keyService), admin));
-    await expect(
-      service.build(AUTH_USER, {
-        ...disputeBody(),
-        ...walletProof(kp(), AUTH_USER.id), // signed by another wallet
-      }),
-    ).rejects.toMatchObject({ status: 403 });
-  });
-
-  it('refuses a stale wallet proof timestamp (403)', async () => {
-    const { admin } = makeAdminDb({ appUserWallet: null });
-    ({ solana, service } = makeService(makeEnv(feePayer, keyService), admin));
-    const stale = Math.floor(Date.now() / 1000) - 600;
-    await expect(
-      service.build(AUTH_USER, {
-        ...disputeBody(),
-        ...walletProof(user, AUTH_USER.id, stale),
-      }),
-    ).rejects.toMatchObject({ status: 403 });
-  });
-
-  it('refuses to bind a wallet already bound to another account (403)', async () => {
+  it('rejects a wallet that is stored but never verified (403)', async () => {
     ({ solana, service } = makeService(
       makeEnv(feePayer, keyService),
       makeAdminDb({
-        appUserWallet: null,
-        holderId: '00000000-0000-4000-8000-0000000000ff',
+        appUserWallet: user.publicKey.toBase58(),
+        verified: false,
       }).admin,
     ));
-    jest.spyOn(solana.connection, 'getLatestBlockhash').mockResolvedValue({
-      blockhash: kp().publicKey.toBase58(),
-      lastValidBlockHeight: 100,
-    });
+    await expect(service.build(AUTH_USER, disputeBody())).rejects.toMatchObject(
+      { status: 403 },
+    );
+  });
+
+  it('rejects when the user has no enrolled wallet at all (403)', async () => {
+    ({ solana, service } = makeService(
+      makeEnv(feePayer, keyService),
+      makeAdminDb({ appUserWallet: null }).admin,
+    ));
     await expect(service.build(AUTH_USER, disputeBody())).rejects.toMatchObject(
       { status: 403 },
     );

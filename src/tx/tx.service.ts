@@ -1,11 +1,6 @@
 import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
 import * as anchor from '@anchor-lang/core';
-import {
-  createHash,
-  createPublicKey,
-  randomUUID,
-  verify as cryptoVerify,
-} from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { SolanaService } from './solana.service';
@@ -56,7 +51,7 @@ export class TxService {
   async build(user: AuthenticatedUser, body: BuildTxDto) {
     const { tx, signer, needsKeyService, estimatedLamports } =
       await this.builder.build(body);
-    await this.assertSignerOwned(user, signer, body);
+    await this.assertSignerVerified(user, signer);
 
     const { blockhash, lastValidBlockHeight } = await this.getLatestBlockhash();
     tx.feePayer = this.solana.feePayer.publicKey;
@@ -184,120 +179,33 @@ export class TxService {
   }
 
   /**
-   * The declared signer must be a wallet of the authenticated user:
-   * app_user.wallet_pubkey or, for doctors, doctors.wallet_pubkey. If the
-   * user has no wallet registered yet, the first signer they present is
-   * bound to their account (null -> set, never overwrite) — but only after
-   * they prove key control with a fresh wallet_proof signature, so nobody
-   * can bind someone else's public key. A wallet already bound to another
-   * account is refused.
+   * The declared signer must be the wallet this user enrolled through
+   * /auth/wallet/verify: app_user.wallet_pubkey matches AND
+   * wallet_verified_at is set (proof of possession happened there). A JWT
+   * alone does not prove key control, and a doctors row alone is not proof
+   * either — enrollment is the only path that sets verified wallets.
    */
-  private async assertSignerOwned(
+  private async assertSignerVerified(
     user: AuthenticatedUser,
     signer: anchor.web3.PublicKey,
-    body: BuildTxDto,
   ) {
     const db = this.admin.create();
-    const signerStr = signer.toBase58();
-    const [{ data: appUser }, { data: doctor }, { data: holder }] =
-      await Promise.all([
-        db
-          .from('app_user')
-          .select('wallet_pubkey')
-          .eq('id', user.id)
-          .maybeSingle(),
-        db
-          .from('doctors')
-          .select('wallet_pubkey')
-          .eq('user_id', user.id)
-          .maybeSingle(),
-        db
-          .from('app_user')
-          .select('id')
-          .eq('wallet_pubkey', signerStr)
-          .maybeSingle(),
-      ]);
-    const owned = [appUser?.wallet_pubkey, doctor?.wallet_pubkey].filter(
-      (w): w is string => typeof w === 'string' && w.length > 0,
-    );
-    if (owned.includes(signerStr)) return;
-    if (owned.length > 0) {
-      throw new HttpException(
-        'signer is not a wallet of the authenticated user',
-        HttpStatus.FORBIDDEN,
-      );
-    }
-    if (holder && holder.id !== user.id) {
-      throw new HttpException(
-        'wallet is already bound to another account',
-        HttpStatus.FORBIDDEN,
-      );
-    }
-    // First transaction for this user: bind the wallet they are about to
-    // sign with, after proving they control it. Empty string for the second
-    // .eq() would match nothing, so .is() is required for a NULL-safe
-    // "only if not already set".
-    this.assertWalletProof(user, signer, body);
-    const { error } = await db
+    const { data: appUser } = await db
       .from('app_user')
-      .update({ wallet_pubkey: signerStr })
+      .select('wallet_pubkey, wallet_verified_at')
       .eq('id', user.id)
-      .is('wallet_pubkey', null);
-    if (error) {
-      throw new HttpException(
-        'wallet binding failed',
-        HttpStatus.INTERNAL_SERVER_ERROR,
-      );
+      .maybeSingle();
+    if (
+      appUser?.wallet_verified_at &&
+      appUser.wallet_pubkey === signer.toBase58()
+    ) {
+      return;
     }
-  }
-
-  /**
-   * First-use binding proof: the wallet signs
-   * `salua:bind-wallet:<user.id>:<signer>:<ts>` (fresh within 5 minutes).
-   * Verifying the signature proves the caller controls the keypair, not
-   * just knows the public key. Ed25519 verify is native to Node — no extra
-   * dependency.
-   */
-  private assertWalletProof(
-    user: AuthenticatedUser,
-    signer: anchor.web3.PublicKey,
-    body: BuildTxDto,
-  ) {
-    const { wallet_proof: proof, wallet_proof_ts: ts } = body;
-    if (!proof || !ts) {
-      throw new HttpException(
-        'wallet not registered: send wallet_proof + wallet_proof_ts (sign ' +
-          '`salua:bind-wallet:<user.id>:<signer>:<ts>` with the wallet)',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
-    if (Math.abs(Date.now() / 1000 - ts) > 300) {
-      throw new HttpException('wallet proof expired', HttpStatus.FORBIDDEN);
-    }
-    const message = Buffer.from(
-      `salua:bind-wallet:${user.id}:${signer.toBase58()}:${ts}`,
-      'utf8',
+    throw new HttpException(
+      'signer is not the verified wallet of the authenticated user - ' +
+        'complete wallet enrollment first',
+      HttpStatus.FORBIDDEN,
     );
-    let valid = false;
-    try {
-      const key = createPublicKey({
-        key: {
-          kty: 'OKP',
-          crv: 'Ed25519',
-          x: Buffer.from(signer.toBytes()).toString('base64url'),
-        },
-        format: 'jwk',
-      });
-      valid = cryptoVerify(null, message, key, Buffer.from(proof, 'base64'));
-    } catch {
-      valid = false;
-    }
-    if (!valid) {
-      throw new HttpException(
-        'wallet proof signature invalid',
-        HttpStatus.FORBIDDEN,
-      );
-    }
   }
 
   private async getLatestBlockhash() {
