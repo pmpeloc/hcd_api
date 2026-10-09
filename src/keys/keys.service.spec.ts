@@ -43,23 +43,28 @@ type Row = Record<string, unknown>;
 function makeDb(handlers: {
   recordsRow?: Row | null;
   appUserRow?: Row | null;
+  appUserError?: { message: string };
   doctorRow?: Row | null;
   releaseId?: number;
   signedUrl?: string;
 }) {
   const inserts: Row[] = [];
   const updates: { values: Row; id: unknown }[] = [];
-  const selectChain = (row: Row | null) => ({
+  const selectChain = (row: Row | null, error: unknown = null) => ({
     select: jest.fn().mockReturnThis(),
     eq: jest.fn().mockReturnThis(),
     maybeSingle: jest
-      .fn<() => Promise<{ data: Row | null; error: null }>>()
-      .mockResolvedValue({ data: row, error: null }),
+      .fn<() => Promise<{ data: Row | null; error: unknown }>>()
+      .mockResolvedValue({ data: row, error }),
   });
   const db = {
     from: jest.fn((table: string) => {
       if (table === 'records') return selectChain(handlers.recordsRow ?? null);
-      if (table === 'app_user') return selectChain(handlers.appUserRow ?? null);
+      if (table === 'app_user')
+        return selectChain(
+          handlers.appUserRow ?? null,
+          handlers.appUserError ?? null,
+        );
       if (table === 'doctors') return selectChain(handlers.doctorRow ?? null);
       if (table === 'key_releases') {
         const chain = {
@@ -377,6 +382,18 @@ describe('KeysService.release', () => {
     await expect(
       service(db, solana).release(user(), { record_id: RECORD_ID }),
     ).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('identity lookup error -> 503, not "no wallet" (403)', async () => {
+    const { db } = makeDb({
+      recordsRow: recordRow(crypto, dek),
+      appUserError: { message: 'connection refused' },
+    });
+    await expect(
+      service(db, makeSolana({ record: activeRecord })).release(user(), {
+        record_id: RECORD_ID,
+      }),
+    ).rejects.toMatchObject({ status: 503 });
   });
 
   it('stored but unverified wallet -> 403 (enrollment never ran)', async () => {

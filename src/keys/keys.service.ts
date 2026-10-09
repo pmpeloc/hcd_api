@@ -199,7 +199,7 @@ export class KeysService implements OnModuleInit {
     db: ReturnType<SupabaseAdminFactory['create']>,
     user: AuthenticatedUser,
   ): Promise<PublicKey[]> {
-    const { data: appUser } = (await db
+    const { data: appUser, error } = (await db
       .from('app_user')
       .select('wallet_pubkey, wallet_verified_at')
       .eq('id', user.id)
@@ -208,7 +208,13 @@ export class KeysService implements OnModuleInit {
         wallet_pubkey?: string | null;
         wallet_verified_at?: string | null;
       } | null;
+      error: unknown;
     };
+    if (error) {
+      // A failed identity read is not "no wallet": fail closed with 503 so
+      // callers can retry instead of silently losing their grants.
+      throw new ServiceUnavailableException('identity lookup unavailable');
+    }
     if (!appUser?.wallet_verified_at || !appUser.wallet_pubkey) return [];
     try {
       return [new PublicKey(appUser.wallet_pubkey)];
