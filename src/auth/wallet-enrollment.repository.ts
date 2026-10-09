@@ -5,46 +5,37 @@ import {
   Injectable,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { createClient } from '@supabase/supabase-js';
+import { SupabaseAdminFactory } from './supabase-admin.factory';
 import { z } from 'zod';
 
 const profileSchema = z.object({
-  id: z.string().uuid(),
+  id: z.uuid(),
   role: z.enum(['patient', 'doctor', 'clinic_admin', 'admin']),
   status: z.enum(['active', 'suspended']),
-  organization_id: z.string().uuid().nullable(),
+  organization_id: z.uuid().nullable(),
   wallet_pubkey: z.string().nullable(),
   wallet_verified_at: z.string().nullable(),
 });
 const profileColumns =
   'id, role, status, organization_id, wallet_pubkey, wallet_verified_at';
 export const challengeRowSchema = z.object({
-  user_id: z.string().uuid(),
-  challenge_id: z.string().uuid(),
+  user_id: z.uuid(),
+  challenge_id: z.uuid(),
   wallet_pubkey: z.string(),
   message: z.string(),
-  expires_at: z.string().datetime({ offset: true }),
+  expires_at: z.iso.datetime({ offset: true }),
   consumed_at: z.string().nullable(),
 });
 export type EnrollmentChallenge = z.infer<typeof challengeRowSchema>;
 
 @Injectable()
 export class WalletEnrollmentRepository {
-  constructor(private readonly config: ConfigService) {}
+  private client?: ReturnType<SupabaseAdminFactory['create']>;
+
+  constructor(private readonly clients: SupabaseAdminFactory) {}
 
   private db() {
-    return createClient(
-      this.config.getOrThrow<string>('SUPABASE_URL'),
-      this.config.getOrThrow<string>('SUPABASE_SERVICE_ROLE'),
-      {
-        auth: {
-          persistSession: false,
-          autoRefreshToken: false,
-          detectSessionInUrl: false,
-        },
-      },
-    );
+    return (this.client ??= this.clients.create());
   }
 
   async initialize(userId: string) {

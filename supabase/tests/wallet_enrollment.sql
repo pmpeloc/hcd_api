@@ -65,4 +65,58 @@ do $$ begin
     raise exception 'Client can access challenges';
   end if;
 end $$;
+-- Exactly one event for the successful proof; rejected calls leave no events.
+do $$ begin
+  if (select count(*) from public.audit_events where event_type = 'wallet_enrolled') <> 1 then
+    raise exception 'Enrollment audit count mismatch';
+  end if;
+end $$;
+
+insert into public.organizations(id, name, kind)
+ values ('00000000-0000-4000-8000-000000000010', 'Synthetic clinic', 'clinic');
+insert into public.doctors(user_id, organization_id, license_number, wallet_pubkey)
+ values ('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000010', 'SYNTHETIC', 'wallet-1');
+do $$ begin
+  begin
+    insert into public.doctors(user_id, organization_id, license_number, wallet_pubkey)
+      values ('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000010', 'SYNTHETIC-2', 'wallet-1');
+    raise exception 'Duplicate doctor wallet accepted';
+  exception when unique_violation then null; end;
+  begin
+    insert into public.doctors(user_id, organization_id, license_number, wallet_pubkey)
+      values ('00000000-0000-4000-8000-000000000002', '00000000-0000-4000-8000-000000000010', 'SYNTHETIC-3', 'wallet-1');
+    raise exception 'Doctor writer bypassed account ownership';
+  exception when sqlstate 'PT409' then null; end;
+end $$;
+
+-- A second proof of the same wallet is allowed and audited, but keeps its first verification time.
+do $$ declare first_verified timestamptz; begin
+  select wallet_verified_at into first_verified from public.app_user where id::text like '%001';
+  update public.wallet_enrollment_challenges set challenge_id = gen_random_uuid(), consumed_at = null
+    where user_id::text like '%001';
+  perform public.complete_wallet_enrollment(user_id, challenge_id)
+    from public.wallet_enrollment_challenges where user_id::text like '%001';
+  if (select wallet_verified_at from public.app_user where id::text like '%001') <> first_verified
+    or (select count(*) from public.audit_events where event_type = 'wallet_enrolled') <> 2 then
+    raise exception 'Same-wallet reenrollment changed verification time or lost audit';
+  end if;
+end $$;
+
+-- An audit failure must roll back BOTH the wallet and challenge consumption.
+create function public.fail_synthetic_enrollment_audit() returns trigger language plpgsql as $$
+begin raise sqlstate 'PT500' using message = 'Synthetic audit failure'; end $$;
+create trigger synthetic_audit_failure before insert on public.audit_events
+  for each row execute function public.fail_synthetic_enrollment_audit();
+update public.wallet_enrollment_challenges set expires_at = clock_timestamp() + interval '5 minutes'
+  where user_id::text like '%003';
+do $$ begin
+  begin
+    perform public.complete_wallet_enrollment('00000000-0000-4000-8000-000000000003','00000000-0000-4000-8000-000000000003');
+    raise exception 'Audit failure ignored';
+  exception when sqlstate 'PT500' then null; end;
+  if exists(select 1 from public.app_user where id::text like '%003' and wallet_verified_at is not null)
+    or exists(select 1 from public.wallet_enrollment_challenges where user_id::text like '%003' and consumed_at is not null) then
+    raise exception 'Audit failure left a partial enrollment';
+  end if;
+end $$;
 rollback;

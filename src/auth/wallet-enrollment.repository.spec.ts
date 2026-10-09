@@ -1,5 +1,5 @@
 /// <reference types="jest" />
-import { ConfigService } from '@nestjs/config';
+import { SupabaseAdminFactory } from './supabase-admin.factory';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { WalletEnrollmentRepository } from './wallet-enrollment.repository';
 const user = '00000000-0000-4000-8000-000000000001';
@@ -23,7 +23,7 @@ describe('Wallet enrollment persistence boundary', () => {
     query.maybeSingle = jest.fn(() => Promise.resolve({ data, error: null }));
     query.upsert = jest.fn().mockResolvedValue({ error: null });
     query.rpc = jest.fn().mockResolvedValue({ error: null });
-    repository = new WalletEnrollmentRepository(new ConfigService());
+    repository = new WalletEnrollmentRepository({} as SupabaseAdminFactory);
     jest
       .spyOn(repository as unknown as { db(): SupabaseClient }, 'db')
       .mockReturnValue(query as unknown as SupabaseClient);
@@ -36,6 +36,15 @@ describe('Wallet enrollment persistence boundary', () => {
     );
     expect(result.role).toBe('doctor');
     expect(result.organization_id).toBe(challengeId);
+  });
+  it('reuses the privileged client supplied by the shared factory', async () => {
+    const create = jest.fn(() => query);
+    const shared = new WalletEnrollmentRepository({
+      create,
+    } as unknown as SupabaseAdminFactory);
+    await shared.profile(user);
+    await shared.profile(user);
+    expect(create).toHaveBeenCalledTimes(1);
   });
   it('does not reactivate suspended users or accept missing profiles', async () => {
     data = null;

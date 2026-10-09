@@ -6,6 +6,27 @@ alter table public.app_user add constraint app_user_verified_wallet_present
   check (wallet_verified_at is null or wallet_pubkey is not null);
 create unique index app_user_wallet_unique on public.app_user(wallet_pubkey)
   where wallet_pubkey is not null;
+create unique index doctors_wallet_unique on public.doctors(wallet_pubkey)
+  where wallet_pubkey is not null;
+
+-- Future doctor writers may copy an already verified binding, never invent one.
+-- Take the same address lock as enrollment to serialize cross-table writes.
+create function public.check_doctor_wallet_binding()
+returns trigger language plpgsql security definer set search_path = '' as $$
+begin
+  if new.wallet_pubkey is not null then
+    perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(new.wallet_pubkey, 0));
+    if not exists(select 1 from public.app_user where id = new.user_id
+      and wallet_pubkey = new.wallet_pubkey and wallet_verified_at is not null) then
+      raise sqlstate 'PT409' using message = 'Doctor wallet requires a verified account binding';
+    end if;
+  end if;
+  return new;
+end;
+$$;
+revoke all on function public.check_doctor_wallet_binding() from public, anon, authenticated;
+create trigger doctors_check_wallet_binding before insert or update of wallet_pubkey, user_id
+  on public.doctors for each row execute function public.check_doctor_wallet_binding();
 
 create table public.wallet_enrollment_challenges (
   user_id uuid primary key references public.app_user(id) on delete cascade,
@@ -55,6 +76,8 @@ begin
     where user_id = p_user_id and wallet_pubkey is null;
   update public.wallet_enrollment_challenges set consumed_at = clock_timestamp()
     where user_id = p_user_id and challenge_id = p_challenge_id;
+  insert into public.audit_events(actor_user_id, organization_id, event_type)
+    values (p_user_id, profile.organization_id, 'wallet_enrolled');
 end;
 $$;
 revoke all on function public.complete_wallet_enrollment(uuid, uuid) from public, anon, authenticated;

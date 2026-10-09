@@ -3,11 +3,13 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  OnModuleInit,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { address, getAddressEncoder, isAddress } from '@solana/kit';
 import { createPublicKey, randomBytes, randomUUID, verify } from 'node:crypto';
+import { z } from 'zod';
 import { WalletEnrollmentRepository } from './wallet-enrollment.repository';
 import type {
   WalletChallengeDto,
@@ -15,11 +17,24 @@ import type {
 } from './wallet-enrollment.schemas';
 
 @Injectable()
-export class WalletEnrollmentService {
+export class WalletEnrollmentService implements OnModuleInit {
   constructor(
     private readonly repository: WalletEnrollmentRepository,
     private readonly config: ConfigService,
   ) {}
+
+  onModuleInit() {
+    this.origin();
+  }
+
+  private account(userId: string, email: string | undefined) {
+    const parsed = z.email().max(254).safeParse(email);
+    if (!parsed.success)
+      throw new ForbiddenException(
+        'An email in the verified session is required',
+      );
+    return `Account: ${parsed.data} (${userId})`;
+  }
 
   initialize(userId: string) {
     return this.repository.initialize(userId);
@@ -48,7 +63,8 @@ export class WalletEnrollmentService {
     }
   }
 
-  async challenge(userId: string, body: WalletChallengeDto) {
+  async challenge(userId: string, body: WalletChallengeDto, email?: string) {
+    const account = this.account(userId, email);
     if (!isAddress(body.wallet_pubkey))
       throw new BadRequestException('Invalid Solana address');
     const profile = await this.repository.profile(userId);
@@ -61,9 +77,9 @@ export class WalletEnrollmentService {
     const expiresAt = new Date(issuedAt.getTime() + 300000).toISOString();
     const challengeId = randomUUID();
     const message = [
-      'Salua wallet enrollment v1',
+      'Salua wallet enrollment v2',
       `Origin: ${this.origin()}`,
-      `Account: ${userId}`,
+      account,
       `Wallet: ${body.wallet_pubkey}`,
       'Purpose: Link this wallet to this Salua account. No transaction or spending authorization.',
       `Challenge: ${challengeId}`,
@@ -82,7 +98,8 @@ export class WalletEnrollmentService {
     return { challenge_id: challengeId, message, expires_at: expiresAt };
   }
 
-  async verify(userId: string, body: WalletVerifyDto) {
+  async verify(userId: string, body: WalletVerifyDto, email?: string) {
+    const account = this.account(userId, email);
     await this.repository.profile(userId);
     const challenge = await this.repository.challenge(
       userId,
@@ -90,11 +107,12 @@ export class WalletEnrollmentService {
     );
     if (
       !challenge.message.startsWith(
-        `Salua wallet enrollment v1\nOrigin: ${this.origin()}\n`,
-      )
+        `Salua wallet enrollment v2\nOrigin: ${this.origin()}\n${account}\nWallet: ${challenge.wallet_pubkey}\n`,
+      ) ||
+      !challenge.message.split('\n').includes(`Challenge: ${body.challenge_id}`)
     ) {
       throw new ForbiddenException(
-        'Challenge belongs to a different enrollment origin',
+        'Challenge identity or enrollment origin does not match',
       );
     }
     const signature = Buffer.from(body.signature, 'base64');

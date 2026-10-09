@@ -12,6 +12,7 @@ import { SupabaseClientFactory } from './supabase-client.factory';
 
 export interface SessionRequest extends Request {
   sessionUserId: string;
+  sessionEmail?: string;
   supabase: SupabaseClient;
 }
 
@@ -37,6 +38,8 @@ export class SupabaseSessionGuard implements CanActivate {
     if (result.error || !subject.success)
       throw new UnauthorizedException('Invalid or expired token');
     request.sessionUserId = subject.data;
+    const email = z.email().max(254).safeParse(result.data?.claims?.email);
+    request.sessionEmail = email.success ? email.data : undefined;
     request.supabase = client;
     return true;
   }

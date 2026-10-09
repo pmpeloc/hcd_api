@@ -12,6 +12,7 @@ import {
   walletVerifySchema,
 } from './wallet-enrollment.schemas';
 
+const email = 'synthetic@example.test';
 const user = '00000000-0000-4000-8000-000000000001';
 const keypair = generateKeyPairSync('ed25519');
 const wallet = getAddressDecoder().decode(
@@ -55,7 +56,7 @@ describe('Wallet enrollment proof', () => {
   });
 
   async function prepare() {
-    return service.challenge(user, { wallet_pubkey: wallet });
+    return service.challenge(user, { wallet_pubkey: wallet }, email);
   }
   function signature(message: string) {
     return sign(
@@ -67,13 +68,17 @@ describe('Wallet enrollment proof', () => {
 
   it('verifies a real Ed25519 signature of the exact server message before committing', async () => {
     const result = await prepare();
-    expect(result.message).toContain(`Account: ${user}`);
+    expect(result.message).toContain(`Account: ${email} (${user})`);
     expect(result.message).toContain(`Wallet: ${wallet}`);
     expect(result.message).toContain('Origin: https://salua.example');
-    const enrolled = await service.verify(user, {
-      challenge_id: result.challenge_id,
-      signature: signature(result.message),
-    });
+    const enrolled = await service.verify(
+      user,
+      {
+        challenge_id: result.challenge_id,
+        signature: signature(result.message),
+      },
+      email,
+    );
     expect(enrolled.wallet_pubkey).toBe(wallet);
     expect(repository.challenge).toHaveBeenCalledWith(
       user,
@@ -97,10 +102,14 @@ describe('Wallet enrollment proof', () => {
         'tampered',
       );
       await expect(
-        service.verify(user, {
-          challenge_id: result.challenge_id,
-          signature: signature(altered),
-        }),
+        service.verify(
+          user,
+          {
+            challenge_id: result.challenge_id,
+            signature: signature(altered),
+          },
+          email,
+        ),
       ).rejects.toMatchObject({ status: 403 });
       expect(repository.complete).not.toHaveBeenCalled();
     },
@@ -115,10 +124,14 @@ describe('Wallet enrollment proof', () => {
       attacker.privateKey,
     ).toString('base64');
     await expect(
-      service.verify(user, {
-        challenge_id: result.challenge_id,
-        signature: forged,
-      }),
+      service.verify(
+        user,
+        {
+          challenge_id: result.challenge_id,
+          signature: forged,
+        },
+        email,
+      ),
     ).rejects.toMatchObject({ status: 403 });
     expect(repository.complete).not.toHaveBeenCalled();
   });
@@ -146,7 +159,7 @@ describe('Wallet enrollment proof', () => {
     repository.profile.mockResolvedValue({ wallet_pubkey: 'existing' });
     await expect(prepare()).rejects.toMatchObject({ status: 409 });
     await expect(
-      service.challenge(user, { wallet_pubkey: 'invalid' }),
+      service.challenge(user, { wallet_pubkey: 'invalid' }, email),
     ).rejects.toMatchObject({ status: 400 });
     expect(repository.save).not.toHaveBeenCalled();
   });
@@ -155,10 +168,14 @@ describe('Wallet enrollment proof', () => {
     const result = await prepare();
     repository.challenge.mockRejectedValue(new Error('gone'));
     await expect(
-      service.verify(user, {
-        challenge_id: result.challenge_id,
-        signature: signature(result.message),
-      }),
+      service.verify(
+        user,
+        {
+          challenge_id: result.challenge_id,
+          signature: signature(result.message),
+        },
+        email,
+      ),
     ).rejects.toThrow('gone');
     expect(repository.complete).not.toHaveBeenCalled();
   });
@@ -175,7 +192,7 @@ describe('Wallet enrollment proof', () => {
         new ConfigService({ WALLET_ENROLLMENT_ORIGIN: origin }),
       );
       await expect(
-        unconfigured.challenge(user, { wallet_pubkey: wallet }),
+        unconfigured.challenge(user, { wallet_pubkey: wallet }, email),
       ).rejects.toMatchObject({ status: 503 });
     }
     expect(repository.save).not.toHaveBeenCalled();
@@ -190,5 +207,93 @@ describe('Wallet enrollment proof', () => {
       300000,
     );
     expect(Date.parse(second.expires_at) - Date.now()).toBeGreaterThan(295000);
+  });
+
+  it.each([undefined, '', 'invalid', 'user@example.test\nAccount: attacker'])(
+    'rejects an absent or unsafe session email: %s',
+    async (value) => {
+      await expect(
+        service.challenge(user, { wallet_pubkey: wallet }, value),
+      ).rejects.toMatchObject({ status: 403 });
+      expect(repository.save).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects a changed session email even with a valid signature', async () => {
+    const result = await prepare();
+    await expect(
+      service.verify(
+        user,
+        {
+          challenge_id: result.challenge_id,
+          signature: signature(result.message),
+        },
+        'other@example.test',
+      ),
+    ).rejects.toMatchObject({ status: 403 });
+    expect(repository.complete).not.toHaveBeenCalled();
+  });
+
+  it.each(['Account:', 'Challenge:', 'Wallet:'])(
+    'rejects a stored message with mismatched %s even if signed',
+    async (field) => {
+      const result = await prepare();
+      challenge.message = challenge.message.replace(field, 'Mismatched:');
+      await expect(
+        service.verify(
+          user,
+          {
+            challenge_id: result.challenge_id,
+            signature: signature(challenge.message),
+          },
+          email,
+        ),
+      ).rejects.toMatchObject({ status: 403 });
+      expect(repository.complete).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects an origin changed after issuance', async () => {
+    const result = await prepare();
+    const changed = new WalletEnrollmentService(
+      repository as unknown as WalletEnrollmentRepository,
+      new ConfigService({ WALLET_ENROLLMENT_ORIGIN: 'https://other.example' }),
+    );
+    await expect(
+      changed.verify(
+        user,
+        {
+          challenge_id: result.challenge_id,
+          signature: signature(result.message),
+        },
+        email,
+      ),
+    ).rejects.toMatchObject({ status: 403 });
+    expect(repository.complete).not.toHaveBeenCalled();
+  });
+
+  it('fails startup with missing origin configuration', () => {
+    const missing = new WalletEnrollmentService(
+      repository as unknown as WalletEnrollmentRepository,
+      new ConfigService(),
+    );
+    expect(() => missing.onModuleInit()).toThrow(
+      'Wallet enrollment origin is not configured',
+    );
+    expect(() => service.onModuleInit()).not.toThrow();
+  });
+
+  it('allows a new proof for the same enrolled wallet', async () => {
+    repository.profile.mockResolvedValue({ wallet_pubkey: wallet });
+    const result = await prepare();
+    await service.verify(
+      user,
+      {
+        challenge_id: result.challenge_id,
+        signature: signature(result.message),
+      },
+      email,
+    );
+    expect(repository.complete).toHaveBeenCalledWith(user, result.challenge_id);
   });
 });

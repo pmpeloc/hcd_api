@@ -45,7 +45,14 @@ describe('Wallet enrollment HTTP boundary', () => {
   beforeEach(() => {
     jest.resetAllMocks();
     getClaims.mockResolvedValue({
-      data: { claims: { sub: user, role: 'admin', organization_id: user } },
+      data: {
+        claims: {
+          sub: user,
+          email: 'synthetic@example.test',
+          role: 'admin',
+          organization_id: user,
+        },
+      },
       error: null,
     });
     service.initialize.mockResolvedValue({
@@ -122,5 +129,40 @@ describe('Wallet enrollment HTTP boundary', () => {
     });
     expect(result.status).toBe(400);
     expect(service.verify).not.toHaveBeenCalled();
+  });
+
+  it('passes only the verified JWT email to the challenge service', async () => {
+    const wallet = '11111111111111111111111111111111';
+    const response = await fetch(url + '/auth/wallet/challenge', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ wallet_pubkey: wallet }),
+    });
+    expect(response.status).toBe(201);
+    expect(service.challenge).toHaveBeenCalledWith(
+      user,
+      { wallet_pubkey: wallet },
+      'synthetic@example.test',
+    );
+    const forged = await fetch(url + '/auth/wallet/challenge', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        wallet_pubkey: wallet,
+        email: 'other@example.test',
+      }),
+    });
+    expect(forged.status).toBe(400);
+    expect(service.challenge).toHaveBeenCalledTimes(1);
+  });
+
+  it('throttles unauthenticated traffic before checking JWTs', async () => {
+    for (let i = 0; i < 11; i++)
+      await fetch(url + '/auth/profile', {
+        headers: { Authorization: 'Bearer spam' },
+      });
+    getClaims.mockClear();
+    expect((await fetch(url + '/auth/profile', { headers })).status).toBe(429);
+    expect(getClaims).not.toHaveBeenCalled();
   });
 });

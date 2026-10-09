@@ -20,7 +20,7 @@ import {
 } from './wallet-enrollment.schemas';
 
 @Controller('auth')
-@UseGuards(SupabaseSessionGuard, ThrottlerGuard)
+@UseGuards(ThrottlerGuard, SupabaseSessionGuard)
 @Throttle({ default: { ttl: 60000, limit: 10 } })
 export class WalletEnrollmentController {
   constructor(private readonly enrollment: WalletEnrollmentService) {}
@@ -41,13 +41,21 @@ export class WalletEnrollmentController {
   challenge(@Req() request: SessionRequest, @Body() body: unknown) {
     const parsed = walletChallengeSchema.safeParse(body);
     if (!parsed.success) throw new BadRequestException('Invalid request');
-    return this.enrollment.challenge(request.sessionUserId, parsed.data);
+    return this.enrollment.challenge(
+      request.sessionUserId,
+      parsed.data,
+      request.sessionEmail,
+    );
   }
 
   @Post('wallet/verify')
   verify(@Req() request: SessionRequest, @Body() body: unknown) {
     const parsed = walletVerifySchema.safeParse(body);
     if (!parsed.success) throw new BadRequestException('Invalid request');
-    return this.enrollment.verify(request.sessionUserId, parsed.data);
+    return this.enrollment.verify(
+      request.sessionUserId,
+      parsed.data,
+      request.sessionEmail,
+    );
   }
 }
