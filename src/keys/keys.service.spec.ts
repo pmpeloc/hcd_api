@@ -4,7 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { Keypair, PublicKey } from '@solana/web3.js';
 import { KeysService } from './keys.service';
 import { KeyCryptoService } from './key-crypto.service';
-import { SupabaseAdminFactory } from './supabase-admin.factory';
+import { SupabaseAdminFactory } from '../auth/supabase-admin.factory';
 import type { AuthenticatedUser } from '../auth/authenticated-request';
 
 const ORG_ID = '11111111-2222-4333-8444-555555555555';

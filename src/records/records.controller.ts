@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Param,
   Post,
   Query,
   Req,
@@ -56,5 +57,10 @@ export class RecordsController {
     @Query(new ZodValidationPipe(listRecordsSchema)) query: ListRecordsDto,
   ) {
     return this.records.list(request, query);
+  }
+
+  @Get('records/:id/chain-hash')
+  chainHash(@Req() request: AuthenticatedRequest, @Param('id') id: string) {
+    return this.records.chainHash(request, id);
   }
 }

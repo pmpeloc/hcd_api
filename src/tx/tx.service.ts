@@ -7,6 +7,7 @@ import { SolanaService } from './solana.service';
 import { TxBuilderService } from './tx-builder.service';
 import { PendingTxStore } from './pending-tx.store';
 import { FeeBudgetService } from './fee-budget.service';
+import { RecordReservationService } from './record-reservation.service';
 import type { BuildTxDto, SubmitTxDto } from './tx-schemas';
 
 const { web3 } = anchor;
@@ -43,9 +44,22 @@ export class TxService {
     private readonly builder: TxBuilderService,
     private readonly pending: PendingTxStore,
     private readonly budget: FeeBudgetService,
+    private readonly reservations: RecordReservationService,
   ) {}
 
   async build(body: BuildTxDto) {
+    if (body.instruction === 'issue_record') {
+      // Authorize against the persisted upload reservation BEFORE building:
+      // a doctor may only anchor the ciphertext they registered, for the
+      // patient that authorized it. See RecordReservationService.
+      await this.reservations.assertIssueable({
+        recordId: body.args.storage_ref,
+        contentHash: body.args.content_hash,
+        patientWallet: body.args.patient,
+        issuerWallet: body.signer,
+      });
+    }
+
     const { tx, signer, needsKeyService, estimatedLamports } =
       await this.builder.build(body);
 

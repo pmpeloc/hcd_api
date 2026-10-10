@@ -4,6 +4,7 @@ import { ConfigModule } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { SupabaseClientFactory } from '../auth/supabase-client.factory';
+import { SolanaService } from '../tx/solana.service';
 import { RecordsModule } from './records.module';
 import { RecordsService } from './records.service';
 import type { AuthenticatedRequest } from '../auth/authenticated-request';
@@ -25,7 +26,12 @@ describe('Records HTTP boundary', () => {
         ConfigModule.forRoot({
           ignoreEnvFile: true,
           isGlobal: true,
-          load: [() => ({ MASTER_KEY: 'ab'.repeat(32) })],
+          load: [
+            () => ({
+              MASTER_KEY: 'ab'.repeat(32),
+              RECORDS_TOKEN_SECRET: 'cd'.repeat(32),
+            }),
+          ],
         }),
         ThrottlerModule.forRoot([{ ttl: 60000, limit: 100 }]),
         RecordsModule,
@@ -35,6 +41,8 @@ describe('Records HTTP boundary', () => {
       .useValue(records)
       .overrideProvider(SupabaseClientFactory)
       .useValue({ create })
+      .overrideProvider(SolanaService)
+      .useValue({ program: { account: {} } })
       .compile();
     app = module.createNestApplication();
     await app.listen(0, '127.0.0.1');

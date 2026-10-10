@@ -3,7 +3,7 @@ import { Throttle } from '@nestjs/throttler';
 import { KeysService } from './keys.service';
 import { releaseKeySchema } from './keys-schemas';
 import type { ReleaseKeyDto } from './keys-schemas';
-import { ZodValidationPipe } from '../tx/zod-validation.pipe';
+import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { SupabaseAuthGuard } from '../auth/supabase-auth.guard';
 import type { AuthenticatedRequest } from '../auth/authenticated-request';
 

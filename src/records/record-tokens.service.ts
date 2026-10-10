@@ -1,6 +1,7 @@
 import {
   ForbiddenException,
   Injectable,
+  OnModuleInit,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -30,13 +31,33 @@ const uploadSchema = z
     doctor_wallet: z.string(),
     content_hash: z.string().regex(/^[0-9a-f]{64}$/),
     ciphertext_bytes: z.number().int().positive(),
+    // Display metadata declared at reservation time and bound into the
+    // ticket, so registration cannot silently swap the study's identity.
+    title: z.string().max(140).optional(),
+    study_date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .optional(),
+    origin: z.enum(['issued', 'digitized']).optional(),
   })
   .strict();
 export type UploadTicket = z.infer<typeof uploadSchema>;
 
 @Injectable()
-export class RecordTokensService {
+export class RecordTokensService implements OnModuleInit {
+  private secret?: Buffer;
+
   constructor(private readonly config: ConfigService) {}
+
+  // Fail fast at boot instead of on the first request: a missing or
+  // malformed RECORDS_TOKEN_SECRET must never reach production traffic.
+  onModuleInit() {
+    const value = this.config.get<string>('RECORDS_TOKEN_SECRET');
+    if (!value || !/^[0-9a-fA-F]{64}$/.test(value)) {
+      throw new Error('RECORDS_TOKEN_SECRET must be 64 hex characters');
+    }
+    this.secret = Buffer.from(value, 'hex');
+  }
 
   patient(patientId: string, wallet: string) {
     return this.sign(
@@ -68,11 +89,10 @@ export class RecordTokensService {
   }
 
   private mac(payload: string) {
-    const secret = this.config.get<string>('RECORDS_TOKEN_SECRET');
-    if (!secret || !/^[0-9a-fA-F]{64}$/.test(secret)) {
+    if (!this.secret) {
       throw new ServiceUnavailableException('Record tokens are not configured');
     }
-    return createHmac('sha256', Buffer.from(secret, 'hex'))
+    return createHmac('sha256', this.secret)
       .update('salua-records-v1:')
       .update(payload)
       .digest();

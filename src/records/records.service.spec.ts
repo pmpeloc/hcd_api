@@ -8,6 +8,7 @@ import { RecordsRepository } from './records.repository';
 import { RecordsService } from './records.service';
 import {
   createRecordSchema,
+  listRecordsSchema,
   uploadRecordSchema,
   MAX_CIPHERTEXT_BYTES,
 } from './records.schemas';
@@ -32,6 +33,7 @@ const config = new ConfigService({
 
 describe('Record tokens', () => {
   const tokens = new RecordTokensService(config);
+  tokens.onModuleInit();
   afterEach(() => jest.useRealTimers());
 
   it('expires patient codes exactly at two minutes', () => {
@@ -53,6 +55,7 @@ describe('Record tokens', () => {
 
   it('denies token issuance without a separate configured secret', () => {
     const unconfigured = new RecordTokensService(new ConfigService());
+    expect(() => unconfigured.onModuleInit()).toThrow('RECORDS_TOKEN_SECRET');
     expect(() => unconfigured.patient(ids.patient, patientWallet)).toThrow(
       'not configured',
     );
@@ -61,19 +64,28 @@ describe('Record tokens', () => {
 
 describe('RecordsService', () => {
   const tokens = new RecordTokensService(config);
+  tokens.onModuleInit();
   const crypto = new KeyCryptoService(config);
   crypto.onModuleInit();
   let repository: {
     doctor: jest.Mock;
     ownPatient: jest.Mock;
     assertPatient: jest.Mock;
+    consumePatientCode: jest.Mock;
     uploadUrl: jest.Mock;
-    ciphertext: jest.Mock;
+    insertReservation: jest.Mock;
+    consumeReservation: jest.Mock;
+    removeUpload: jest.Mock;
+    ciphertextHash: jest.Mock;
     insert: jest.Mock;
     list: jest.Mock;
+    findPda: jest.Mock;
   };
   let service: RecordsService;
   let request: AuthenticatedRequest;
+  const solana = {
+    program: { account: { record: { fetch: jest.fn() } } },
+  } as unknown as ConstructorParameters<typeof RecordsService>[3];
 
   beforeEach(() => {
     request = {
@@ -94,19 +106,25 @@ describe('RecordsService', () => {
         .fn()
         .mockResolvedValue({ id: ids.patient, wallet_pubkey: patientWallet }),
       assertPatient: jest.fn().mockResolvedValue(undefined),
+      consumePatientCode: jest.fn().mockResolvedValue(undefined),
+      insertReservation: jest.fn().mockResolvedValue(undefined),
+      consumeReservation: jest.fn().mockResolvedValue(undefined),
+      removeUpload: jest.fn().mockResolvedValue(undefined),
       uploadUrl: jest.fn().mockResolvedValue({
         signedUrl: 'https://storage.invalid/upload',
         path: 'opaque.bin',
         token: 'storage-token',
       }),
-      ciphertext: jest.fn().mockResolvedValue(ciphertext),
+      ciphertextHash: jest.fn().mockResolvedValue(hash),
       insert: jest.fn().mockResolvedValue(undefined),
       list: jest.fn(),
+      findPda: jest.fn(),
     };
     service = new RecordsService(
       repository as unknown as RecordsRepository,
       tokens,
       crypto,
+      solana,
     );
   });
 
@@ -138,6 +156,10 @@ describe('RecordsService', () => {
         },
       },
     });
+    expect(repository.ciphertextHash).toHaveBeenCalledWith(
+      expect.anything(),
+      Buffer.from(iv, 'base64'),
+    );
     const [ticket, wrapped, savedIv] = repository.insert.mock.calls[0] as [
       unknown,
       Buffer,
@@ -174,14 +196,14 @@ describe('RecordsService', () => {
           encryption_iv: iv,
         }),
       ).rejects.toMatchObject({ status: 403 });
-      expect(repository.ciphertext).not.toHaveBeenCalled();
+      expect(repository.ciphertextHash).not.toHaveBeenCalled();
       expect(repository.insert).not.toHaveBeenCalled();
     },
   );
 
   it('does not persist when the ciphertext hash changes', async () => {
     const upload = await reserve();
-    repository.ciphertext.mockResolvedValue(Buffer.alloc(ciphertext.length, 2));
+    repository.ciphertextHash.mockResolvedValue('cd'.repeat(32));
     await expect(
       service.create(request, {
         upload_token: upload.upload_token,
@@ -190,6 +212,74 @@ describe('RecordsService', () => {
       }),
     ).rejects.toMatchObject({ status: 409 });
     expect(repository.insert).not.toHaveBeenCalled();
+  });
+
+  it('burns the patient code nonce so replays get 403 before upload', async () => {
+    repository.consumePatientCode.mockRejectedValue(
+      Object.assign(new Error('Patient code already used'), { status: 403 }),
+    );
+    await expect(reserve()).rejects.toMatchObject({ status: 403 });
+    expect(repository.uploadUrl).not.toHaveBeenCalled();
+  });
+
+  it('persists the reservation when issuing an upload URL', async () => {
+    const upload = await reserve();
+    expect(repository.insertReservation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        record_id: upload.record_id,
+        organization_id: ids.org,
+      }),
+    );
+  });
+
+  it('rejects a replayed upload token without touching storage', async () => {
+    const upload = await reserve();
+    repository.consumeReservation.mockRejectedValue(
+      Object.assign(new Error('Upload token already used or expired'), {
+        status: 403,
+      }),
+    );
+    await expect(
+      service.create(request, {
+        upload_token: upload.upload_token,
+        dek,
+        encryption_iv: iv,
+      }),
+    ).rejects.toMatchObject({ status: 403 });
+    expect(repository.ciphertextHash).not.toHaveBeenCalled();
+    expect(repository.insert).not.toHaveBeenCalled();
+  });
+
+  it('removes the orphaned ciphertext when registration fails', async () => {
+    const upload = await reserve();
+    repository.insert.mockRejectedValue(new Error('database unavailable'));
+    await expect(
+      service.create(request, {
+        upload_token: upload.upload_token,
+        dek,
+        encryption_iv: iv,
+      }),
+    ).rejects.toThrow('database unavailable');
+    expect(repository.removeUpload).toHaveBeenCalledWith(
+      expect.objectContaining({ record_id: upload.record_id }),
+    );
+  });
+
+  it('returns the on-chain hash and null while pending_chain', async () => {
+    const pda = 'BPFLoaderUpgradeab1e11111111111111111111111';
+    repository.findPda.mockResolvedValue({ id: ids.patient, record_pda: pda });
+    (solana.program.account.record.fetch as jest.Mock).mockResolvedValue({
+      contentHash: Array.from(Buffer.alloc(32, 0xab)),
+    });
+    await expect(service.chainHash(request, ids.patient)).resolves.toEqual({
+      record_pda: pda,
+      content_hash: 'ab'.repeat(32),
+    });
+    repository.findPda.mockResolvedValue({ id: ids.patient, record_pda: null });
+    await expect(service.chainHash(request, ids.patient)).resolves.toEqual({
+      record_pda: null,
+      content_hash: null,
+    });
   });
 
   it('denies self-issued records before creating an upload URL', async () => {
@@ -277,6 +367,14 @@ describe('Record request validation', () => {
         ciphertext_bytes: MAX_CIPHERTEXT_BYTES + 1,
       }).success,
     ).toBe(false);
+  });
+
+  it('ignores cache-buster params on the records query', () => {
+    const parsed = listRecordsSchema.safeParse({ _: '1699', limit: '5' });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data).toEqual({ offset: 0, limit: 5 });
+    }
   });
 
   it('never includes submitted keys in validation errors', () => {

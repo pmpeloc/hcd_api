@@ -3,10 +3,9 @@ import { ConfigService } from '@nestjs/config';
 import { createClient } from '@supabase/supabase-js';
 
 /**
- * Service-role Supabase client for the keys module. Used ONLY for the
- * privileged reads/writes the release flow needs: `records` (the release
- * decision is made on-chain, not by RLS membership) and `key_releases`
- * (backend-only audit writes). Never returned to the request.
+ * Service-role Supabase client for backend-only privileged reads/writes
+ * (release decisions, audit writes, enrollment). Bypasses RLS — never
+ * return it to the request and never call it with user-supplied queries.
  */
 @Injectable()
 export class SupabaseAdminFactory {

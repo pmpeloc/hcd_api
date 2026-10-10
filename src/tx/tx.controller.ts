@@ -2,7 +2,7 @@ import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { TxService } from './tx.service';
 import { TxThrottlerGuard } from './tx-throttler.guard';
-import { ZodValidationPipe } from './zod-validation.pipe';
+import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { buildTxSchema, submitTxSchema } from './tx-schemas';
 import type { BuildTxDto, SubmitTxDto } from './tx-schemas';
 
