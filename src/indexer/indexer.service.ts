@@ -62,7 +62,7 @@ export class IndexerService implements OnModuleInit, OnModuleDestroy {
     this.parser = new EventParser(this.solana.programId, new BorshCoder(idl));
     this.listenerId = this.solana.connection.onLogs(
       this.solana.programId,
-      (logs) => void this.handleLogs(logs.logs, logs.signature),
+      (logs) => void this.handleLogs(logs.logs, logs.signature, logs.err),
       'confirmed',
     );
     this.logger.log(
@@ -78,9 +78,11 @@ export class IndexerService implements OnModuleInit, OnModuleDestroy {
 
   /** Parses one transaction's log lines and mirrors every event it emitted.
    * Never throws into the onLogs callback — a bad log batch is logged and
-   * dropped, not allowed to kill the listener. */
-  async handleLogs(logLines: string[], signature: string) {
-    if (!this.parser) return;
+   * dropped, not allowed to kill the listener. A failed transaction still
+   * reaches onLogs with the events it emitted before reverting; its state
+   * changes never happened on-chain, so nothing is mirrored. */
+  async handleLogs(logLines: string[], signature: string, err?: unknown) {
+    if (!this.parser || err) return;
     try {
       for (const event of this.parser.parseLogs(logLines)) {
         await this.handleEvent(
@@ -152,7 +154,21 @@ export class IndexerService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    // The event carries no storage_ref; read it from the anchored account so
+    // only the exact reservation (records.id) is activated, even when the
+    // same doctor has several pending uploads for the same patient.
+    const account = (await this.solana.program.account['record']
+      .fetch(new PublicKey(recordPda))
+      .catch(() => null)) as { storageRef?: string } | null;
+    if (!account?.storageRef) {
+      this.logger.warn(
+        `RecordIssued ignored: record account unreadable (${signature})`,
+      );
+      return;
+    }
+
     const row = await this.repository.activateRecord({
+      storageRef: account.storageRef,
       recordPda,
       recordId,
       patientUserId,

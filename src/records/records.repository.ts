@@ -69,6 +69,7 @@ export class RecordsRepository {
       .from('app_user')
       .select('wallet_pubkey')
       .eq('id', user.id)
+      .not('wallet_verified_at', 'is', null)
       .maybeSingle();
     if (profile.error)
       throw new ServiceUnavailableException('Wallet lookup failed');

@@ -80,6 +80,7 @@ const repository = {
       patient_user_id: string;
       doctor_id: string;
       record_ids: string[];
+      granted_expires_at?: string | null;
     } | null> =>
       Promise.resolve({
         id: requestId,
@@ -118,10 +119,18 @@ const tokens = {
   readPatient: jest.fn(() => code),
 };
 
+const fetchGrants = jest.fn((pdas: unknown[]): Promise<unknown[]> =>
+  Promise.resolve(pdas.map(() => null)),
+);
+const activeGrant = {
+  status: { active: {} },
+  expiresAt: { toNumber: () => Math.floor(Date.now() / 1000) + 3600 },
+};
 const solana = {
   grantPda: jest.fn(() => ({
     toBase58: () => 'GrantPda111111111111111111111',
   })),
+  program: { account: { accessGrant: { fetchMultiple: fetchGrants } } },
 };
 
 const service = new AccessService(
@@ -253,6 +262,42 @@ describe('approve', () => {
     ).rejects.toMatchObject({ status: 409 });
   });
 
+  it('re-approving a half-signed approval returns only the missing grants', async () => {
+    const future = new Date(Date.now() + 3_600_000).toISOString();
+    repository.pendingForPatient.mockResolvedValueOnce({
+      id: requestId,
+      status: 'approved',
+      patient_user_id: patientId,
+      doctor_id: doctorRowId,
+      record_ids: [recordId],
+      granted_expires_at: future,
+    });
+    const result = await service.approve(
+      asUser('patient', patientId),
+      requestId,
+      { duration_seconds: 3600 },
+    );
+    expect(result.build_requests).toHaveLength(1);
+    expect(result.granted_expires_at).toBe(future);
+    expect(repository.resolveRequest).not.toHaveBeenCalled();
+
+    // Every grant already on-chain -> nothing to resume.
+    fetchGrants.mockResolvedValueOnce([activeGrant]);
+    repository.pendingForPatient.mockResolvedValueOnce({
+      id: requestId,
+      status: 'approved',
+      patient_user_id: patientId,
+      doctor_id: doctorRowId,
+      record_ids: [recordId],
+      granted_expires_at: future,
+    });
+    await expect(
+      service.approve(asUser('patient', patientId), requestId, {
+        duration_seconds: 3600,
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+  });
+
   it('a doctor that lost verification cannot be granted', async () => {
     repository.doctorByRowId.mockResolvedValueOnce({
       ...doctorRow,
@@ -309,9 +354,39 @@ describe('myRequests', () => {
         record_id: recordId,
         record_pda: recordPda,
         grant_pda: 'GrantPda111111111111111111111',
+        grant_status: 'missing',
       },
     ]);
+    expect(row.status).toBe('approved');
     expect(solana.grantPda).toHaveBeenCalled();
+  });
+
+  it('an approved request whose grants were all revoked on-chain reads as revoked', async () => {
+    fetchGrants.mockResolvedValueOnce([
+      { ...activeGrant, status: { revoked: {} } },
+    ]);
+    repository.myRequests.mockResolvedValueOnce([
+      {
+        id: requestId,
+        status: 'approved',
+        reason: 'Consulta',
+        created_at: '2026-10-01T00:00:00Z',
+        resolved_at: '2026-10-02T00:00:00Z',
+        granted_expires_at: '2026-10-03T00:00:00Z',
+        record_ids: [recordId],
+        doctor_id: doctorRowId,
+        doctors: {
+          license_number: 'MN-1',
+          specialty: null,
+          wallet_pubkey: doctorWallet,
+          app_user: null,
+          organizations: null,
+        },
+      },
+    ]);
+    const result = await service.myRequests(asUser('patient', patientId), {});
+    expect(result.requests[0].status).toBe('revoked');
+    expect(result.requests[0].records[0].grant_status).toBe('revoked');
   });
 
   it('pending rows carry no grant records', async () => {

@@ -6,6 +6,8 @@ import type { SolanaService } from '../tx/solana.service';
 const recordPda = PublicKey.unique().toBase58();
 const patientWallet = PublicKey.unique();
 const doctorWallet = PublicKey.unique();
+const storageRef = '00000000-0000-4000-8000-000000000010';
+const fetchRecord = jest.fn(() => Promise.resolve({ storageRef }));
 const recordRow = {
   id: '00000000-0000-4000-8000-000000000010',
   organization_id: '00000000-0000-4000-8000-000000000020',
@@ -23,6 +25,7 @@ const solana = {
   programId: PublicKey.unique(),
   connection,
   recordPda: jest.fn(() => new PublicKey(recordPda)),
+  program: { account: { record: { fetch: fetchRecord } } },
 } as unknown as SolanaService;
 
 const repository = {
@@ -35,6 +38,7 @@ const repository = {
     Promise<typeof recordRow | null>,
     [
       {
+        storageRef: string;
         recordPda: string;
         recordId: number;
         patientUserId: string;
@@ -100,6 +104,7 @@ describe('IndexerService', () => {
       'sig-1',
     );
     expect(repository.activateRecord).toHaveBeenCalledWith({
+      storageRef,
       recordPda,
       recordId: 3,
       patientUserId: 'user-1',
@@ -241,6 +246,30 @@ describe('IndexerService', () => {
       'sig-1',
     );
     expect(repository.insertAudit).not.toHaveBeenCalled();
+  });
+
+  it('handleLogs mirrors nothing from a failed transaction', async () => {
+    service.onModuleInit();
+    const handle = jest.spyOn(service, 'handleEvent');
+    await service.handleLogs(['Program log: anything'], 'sig-failed', {
+      InstructionError: [0, 'Custom'],
+    });
+    expect(handle).not.toHaveBeenCalled();
+  });
+
+  it('RecordIssued is ignored when the record account is unreadable', async () => {
+    fetchRecord.mockRejectedValueOnce(new Error('not found'));
+    await service.handleEvent(
+      'RecordIssued',
+      {
+        record: new PublicKey(recordPda),
+        patient: patientWallet,
+        issuer: doctorWallet,
+        record_id: { toNumber: () => 3 },
+      },
+      'sig-missing',
+    );
+    expect(repository.activateRecord).not.toHaveBeenCalled();
   });
 
   it('handleLogs swallows parse errors instead of killing the listener', async () => {

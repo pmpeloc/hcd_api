@@ -46,6 +46,7 @@ describe('RecordsRepository authorization and persistence', () => {
       'update',
       'is',
       'gt',
+      'not',
     ])
       chain[name] = jest.fn(() => chain);
     for (const name of ['range', 'maybeSingle', 'insert', 'lt'])

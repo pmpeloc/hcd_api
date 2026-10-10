@@ -68,6 +68,7 @@ export class IndexerRepository {
    * matches patient + issuer and has never been anchored is touched, so a
    * replayed or forged log line can't resurrect a resolved record. */
   async activateRecord(args: {
+    storageRef: string;
     recordPda: string;
     recordId: number;
     patientUserId: string;
@@ -81,6 +82,7 @@ export class IndexerRepository {
         record_id_onchain: args.recordId,
         status: 'active',
       })
+      .eq('id', args.storageRef)
       .eq('patient_user_id', args.patientUserId)
       .eq('issuer_doctor_id', args.doctorId)
       .eq('status', 'pending_chain')

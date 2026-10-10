@@ -187,6 +187,7 @@ function makeDb(rows: DbRows) {
           filters[col] = val;
           return chain;
         },
+        not: () => chain,
         maybeSingle: () => {
           if (rows.error)
             return Promise.resolve({ data: null, error: rows.error });

@@ -112,6 +112,7 @@ export class RecordReservationService {
       .select('wallet_pubkey')
       .eq('id', doctor.data.user_id)
       .eq('status', 'active')
+      .not('wallet_verified_at', 'is', null)
       .maybeSingle();
     if (issuerResult.error)
       throw new ServiceUnavailableException('Issuer lookup failed');
@@ -126,6 +127,7 @@ export class RecordReservationService {
       .eq('id', record.patient_user_id)
       .eq('role', 'patient')
       .eq('status', 'active')
+      .not('wallet_verified_at', 'is', null)
       .maybeSingle();
     if (patientResult.error)
       throw new ServiceUnavailableException('Patient lookup failed');

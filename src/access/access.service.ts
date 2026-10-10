@@ -8,13 +8,18 @@ import type { AuthenticatedRequest } from '../auth/authenticated-request';
 import { RecordTokensService } from '../records/record-tokens.service';
 import { RecordsRepository } from '../records/records.repository';
 import { PublicKey, SolanaService } from '../tx/solana.service';
-import { AccessRepository } from './access.repository';
+import { AccessRepository, type AccessRequestRow } from './access.repository';
 import type {
   ApproveAccessRequestDto,
   CreateAccessRequestDto,
   ListAccessRequestsDto,
   LookupPatientDto,
 } from './access.schemas';
+
+/** What the AccessGrant account says right now. 'missing' = never signed
+ * (or the approval was abandoned mid-way); 'unknown' = RPC unavailable. */
+export type GrantStatus =
+  'active' | 'revoked' | 'expired' | 'missing' | 'unknown';
 
 /**
  * Off-chain access requests: the doctor asks with the patient's QR code and
@@ -30,6 +35,28 @@ export class AccessService {
     private readonly tokens: RecordTokensService,
     private readonly solana: SolanaService,
   ) {}
+
+  /** The chain, not access_requests, says whether a doctor can still read:
+   * revoke_access and expiry never touch the off-chain row. */
+  private async grantStatuses(pdas: PublicKey[]): Promise<GrantStatus[]> {
+    if (pdas.length === 0) return [];
+    const now = Math.floor(Date.now() / 1000);
+    try {
+      const accounts = (await this.solana.program.account[
+        'accessGrant'
+      ].fetchMultiple(pdas)) as ({
+        status: Record<string, unknown>;
+        expiresAt: { toNumber(): number };
+      } | null)[];
+      return accounts.map((grant): GrantStatus => {
+        if (!grant) return 'missing';
+        if ('revoked' in grant.status) return 'revoked';
+        return grant.expiresAt.toNumber() <= now ? 'expired' : 'active';
+      });
+    } catch {
+      return pdas.map(() => 'unknown');
+    }
+  }
 
   /** Codes arrive in two shapes: the signed HMAC token from the QR payload,
    * or the dictable `SAL-XXXX` alias persisted next to its nonce. */
@@ -117,6 +144,7 @@ export class AccessService {
             record_id: string;
             record_pda: string;
             grant_pda: string;
+            grant_status: GrantStatus;
           }[];
         } = {
           request_id: row.id,
@@ -146,13 +174,31 @@ export class AccessService {
             row.record_ids,
           );
           const doctorWallet = new PublicKey(doctor.wallet_pubkey);
-          result.records = covered.map((record) => ({
+          const pdas = covered.map((record) =>
+            this.solana.grantPda(
+              new PublicKey(record.record_pda),
+              doctorWallet,
+            ),
+          );
+          const statuses = await this.grantStatuses(pdas);
+          result.records = covered.map((record, i) => ({
             record_id: record.id,
             record_pda: record.record_pda,
-            grant_pda: this.solana
-              .grantPda(new PublicKey(record.record_pda), doctorWallet)
-              .toBase58(),
+            grant_pda: pdas[i].toBase58(),
+            grant_status: statuses[i],
           }));
+          // Once every signed grant is revoked or expired on-chain the
+          // request is over, even though the off-chain row still says
+          // approved. Unsigned ('missing') grants keep it approved so the
+          // patient can finish signing.
+          if (
+            statuses.length > 0 &&
+            statuses.every((s) => s === 'revoked' || s === 'expired')
+          ) {
+            result.status = statuses.includes('revoked')
+              ? 'revoked'
+              : 'expired';
+          }
         }
         return result;
       }),
@@ -178,6 +224,8 @@ export class AccessService {
       request.user.id,
     );
     if (!pending) throw new NotFoundException('Request not found');
+    if (pending.status === 'approved')
+      return this.resumeApproval(request, pending);
     if (pending.status !== 'pending')
       throw new ConflictException('Request already resolved');
 
@@ -221,6 +269,60 @@ export class AccessService {
           expires_at: expiresAt,
         },
         // Handy for the "Pueden ver" list the app paints right after signing.
+        grant_pda: this.solana
+          .grantPda(new PublicKey(record.record_pda), doctorWallet)
+          .toBase58(),
+      })),
+    };
+  }
+
+  /**
+   * An approval is marked before the patient signs. If the wallet modal was
+   * cancelled or a grant_access failed half-way, approving again returns the
+   * build requests for the grants that never landed, with the original
+   * expiry — instead of a dead-end 409.
+   */
+  private async resumeApproval(
+    request: AuthenticatedRequest,
+    pending: AccessRequestRow,
+  ) {
+    const expiresAtIso = pending.granted_expires_at;
+    const expiresAt = expiresAtIso
+      ? Math.floor(Date.parse(expiresAtIso) / 1000)
+      : 0;
+    if (expiresAt <= Math.floor(Date.now() / 1000))
+      throw new ConflictException('Request already resolved');
+
+    const doctor = await this.repository.doctorByRowId(pending.doctor_id);
+    if (!doctor?.verified || !doctor.wallet_pubkey)
+      throw new ConflictException('Doctor is no longer verified');
+    const doctorWallet = new PublicKey(doctor.wallet_pubkey);
+
+    const records = await this.repository.grantableRecords(
+      request.user.id,
+      pending.record_ids,
+    );
+    const pdas = records.map((record) =>
+      this.solana.grantPda(new PublicKey(record.record_pda), doctorWallet),
+    );
+    const statuses = await this.grantStatuses(pdas);
+    const unsigned = records.filter((_, i) => statuses[i] === 'missing');
+    if (unsigned.length === 0)
+      throw new ConflictException('Request already resolved');
+
+    const patient = await this.records.ownPatient(request);
+    return {
+      request_id: pending.id,
+      status: 'approved' as const,
+      granted_expires_at: expiresAtIso,
+      build_requests: unsigned.map((record) => ({
+        instruction: 'grant_access' as const,
+        signer: patient.wallet_pubkey,
+        args: {
+          record: record.record_pda,
+          doctor: doctor.wallet_pubkey,
+          expires_at: expiresAt,
+        },
         grant_pda: this.solana
           .grantPda(new PublicKey(record.record_pda), doctorWallet)
           .toBase58(),

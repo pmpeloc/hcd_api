@@ -24,6 +24,7 @@ const accessRequestSchema = z.object({
   patient_user_id: z.string().uuid(),
   doctor_id: z.string().uuid(),
   record_ids: z.array(z.string().uuid()),
+  granted_expires_at: z.string().nullable().optional(),
 });
 export type AccessRequestRow = z.infer<typeof accessRequestSchema>;
 
@@ -171,7 +172,9 @@ export class AccessRepository {
     const result = await this.admin
       .create()
       .from('access_requests')
-      .select('id, status, patient_user_id, doctor_id, record_ids')
+      .select(
+        'id, status, patient_user_id, doctor_id, record_ids, granted_expires_at',
+      )
       .eq('id', requestId)
       .eq('patient_user_id', patientId)
       .maybeSingle();
@@ -240,13 +243,21 @@ export class AccessRepository {
       .create()
       .from('audit_events')
       .select(
-        'id, event_type, tx_signature, created_at, record_id, actor_wallet, records!inner(title, patient_user_id), organizations(name)',
+        'id, event_type, tx_signature, created_at, record_id, actor:app_user(wallet_pubkey), records!inner(title, patient_user_id), organizations(name)',
       )
       .eq('records.patient_user_id', request.user.id)
       .order('created_at', { ascending: false })
       .limit(100);
     if (result.error)
       throw new ServiceUnavailableException('Timeline lookup failed');
-    return result.data;
+    // audit_events stores the actor id; the app shows the actor's wallet.
+    return (
+      result.data as unknown as (Record<string, unknown> & {
+        actor: { wallet_pubkey: string | null } | null;
+      })[]
+    ).map(({ actor, ...row }) => ({
+      ...row,
+      actor_wallet: actor?.wallet_pubkey ?? null,
+    }));
   }
 }
