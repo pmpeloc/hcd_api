@@ -62,9 +62,9 @@ const anchorEnum = (v: Record<string, object>): string => Object.keys(v)[0];
  *
  * log_access carries a Memo instruction with the key_releases row id so the
  * on-chain entry is unique and links back to the audit row (decision
- * 2026-10-06). On a program rejection nothing is delivered (the on-chain
- * state is the final word); on pure infra failure the DEK is still released
- * and the row stays `pending` for the retry worker.
+ * 2026-10-06). Fail-closed (decision 2026-10-08): if the log cannot be
+ * confirmed on-chain — program rejection OR infra failure — nothing is
+ * delivered. Without Solana there is no Salua.
  */
 @Injectable()
 export class KeysService implements OnModuleInit {
@@ -191,33 +191,37 @@ export class KeysService implements OnModuleInit {
     return response;
   }
 
-  /** Wallets this requester can claim: their app_user wallet plus, for
-   * doctors, the provider wallet enrolled on-chain. */
+  /** The only wallet this requester can claim is the one they enrolled
+   * through /auth/wallet/verify: app_user.wallet_pubkey with a non-null
+   * wallet_verified_at. A bare wallet_pubkey (legacy or doctors row) is
+   * not proof of possession, so unverified wallets get no grants. */
   private async requesterWallets(
     db: ReturnType<SupabaseAdminFactory['create']>,
     user: AuthenticatedUser,
   ): Promise<PublicKey[]> {
-    const out: PublicKey[] = [];
-    const { data: appUser } = (await db
+    const { data: appUser, error } = (await db
       .from('app_user')
-      .select('wallet_pubkey')
+      .select('wallet_pubkey, wallet_verified_at')
       .eq('id', user.id)
-      .maybeSingle()) as { data: { wallet_pubkey?: string | null } | null };
-    const { data: doctor } = (await db
-      .from('doctors')
-      .select('wallet_pubkey')
-      .eq('user_id', user.id)
-      .maybeSingle()) as { data: { wallet_pubkey?: string | null } | null };
-    for (const w of [appUser?.wallet_pubkey, doctor?.wallet_pubkey]) {
-      if (typeof w === 'string' && w.length > 0) {
-        try {
-          out.push(new PublicKey(w));
-        } catch {
-          this.logger.warn(`Ignoring malformed wallet_pubkey for ${user.id}`);
-        }
-      }
+      .maybeSingle()) as {
+      data: {
+        wallet_pubkey?: string | null;
+        wallet_verified_at?: string | null;
+      } | null;
+      error: unknown;
+    };
+    if (error) {
+      // A failed identity read is not "no wallet": fail closed with 503 so
+      // callers can retry instead of silently losing their grants.
+      throw new ServiceUnavailableException('identity lookup unavailable');
     }
-    return out;
+    if (!appUser?.wallet_verified_at || !appUser.wallet_pubkey) return [];
+    try {
+      return [new PublicKey(appUser.wallet_pubkey)];
+    } catch {
+      this.logger.warn(`Ignoring malformed wallet_pubkey for ${user.id}`);
+      return [];
+    }
   }
 
   private async findActiveGrant(
@@ -244,9 +248,11 @@ export class KeysService implements OnModuleInit {
 
   /**
    * Doctor release: insert the audit row first (we need its id for the Memo),
-   * then send log_access co-signed by key_service + fee_payer.
-   * Program rejection -> row `failed`, throw 403, nothing was delivered.
-   * Infra failure -> row stays `pending`, the DEK is still delivered.
+   * then send log_access co-signed by key_service + fee_payer. Fail-closed:
+   * unless the log confirms on-chain, nothing is delivered.
+   * Program rejection -> row `failed`, 403.
+   * Infra failure    -> row `failed`, 503 (the requester retries the whole
+   *                     release; a pending row is never delivered late).
    */
   private async releaseWithLogAccess(
     db: ReturnType<SupabaseAdminFactory['create']>,
@@ -310,13 +316,19 @@ export class KeysService implements OnModuleInit {
       }
     }
     this.logger.warn(
-      `log_access unreachable for release ${releaseId}; delivered, pending retry`,
+      `log_access unreachable for release ${releaseId}; nothing delivered`,
       lastErr,
     );
     await db
       .from('key_releases')
-      .update({ log_access_attempts: LOG_ACCESS_RETRIES })
+      .update({
+        log_access_status: 'failed',
+        log_access_attempts: LOG_ACCESS_RETRIES,
+      })
       .eq('id', releaseId);
+    throw new ServiceUnavailableException(
+      'Solana is unreachable; the access could not be logged on-chain',
+    );
   }
 
   private async sendLogAccess(

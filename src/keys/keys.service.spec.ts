@@ -43,23 +43,28 @@ type Row = Record<string, unknown>;
 function makeDb(handlers: {
   recordsRow?: Row | null;
   appUserRow?: Row | null;
+  appUserError?: { message: string };
   doctorRow?: Row | null;
   releaseId?: number;
   signedUrl?: string;
 }) {
   const inserts: Row[] = [];
   const updates: { values: Row; id: unknown }[] = [];
-  const selectChain = (row: Row | null) => ({
+  const selectChain = (row: Row | null, error: unknown = null) => ({
     select: jest.fn().mockReturnThis(),
     eq: jest.fn().mockReturnThis(),
     maybeSingle: jest
-      .fn<() => Promise<{ data: Row | null; error: null }>>()
-      .mockResolvedValue({ data: row, error: null }),
+      .fn<() => Promise<{ data: Row | null; error: unknown }>>()
+      .mockResolvedValue({ data: row, error }),
   });
   const db = {
     from: jest.fn((table: string) => {
       if (table === 'records') return selectChain(handlers.recordsRow ?? null);
-      if (table === 'app_user') return selectChain(handlers.appUserRow ?? null);
+      if (table === 'app_user')
+        return selectChain(
+          handlers.appUserRow ?? null,
+          handlers.appUserError ?? null,
+        );
       if (table === 'doctors') return selectChain(handlers.doctorRow ?? null);
       if (table === 'key_releases') {
         const chain = {
@@ -239,7 +244,10 @@ describe('KeysService.release', () => {
   it('patient gets the DEK, row is skipped, no log_access tx', async () => {
     const { db, inserts } = makeDb({
       recordsRow: recordRow(crypto, dek),
-      appUserRow: { wallet_pubkey: patient.publicKey.toBase58() },
+      appUserRow: {
+        wallet_pubkey: patient.publicKey.toBase58(),
+        wallet_verified_at: '2026-10-08T12:00:00Z',
+      },
     });
     const solana = makeSolana({ record: activeRecord });
     const res = await service(db, solana).release(user(), {
@@ -257,7 +265,10 @@ describe('KeysService.release', () => {
   it('issuer gets the DEK without log_access', async () => {
     const { db, inserts } = makeDb({
       recordsRow: recordRow(crypto, dek),
-      doctorRow: { wallet_pubkey: issuer.publicKey.toBase58() },
+      appUserRow: {
+        wallet_pubkey: issuer.publicKey.toBase58(),
+        wallet_verified_at: '2026-10-08T12:00:00Z',
+      },
     });
     const res = await service(db, makeSolana({ record: activeRecord })).release(
       user(),
@@ -270,7 +281,10 @@ describe('KeysService.release', () => {
   it('doctor with a live grant: log_access confirmed with tx_signature', async () => {
     const { db, inserts, updates } = makeDb({
       recordsRow: recordRow(crypto, dek),
-      doctorRow: { wallet_pubkey: doctor.publicKey.toBase58() },
+      appUserRow: {
+        wallet_pubkey: doctor.publicKey.toBase58(),
+        wallet_verified_at: '2026-10-08T12:00:00Z',
+      },
       releaseId: 42,
     });
     const solana = makeSolana({
@@ -303,7 +317,10 @@ describe('KeysService.release', () => {
   it('program rejection -> 403, row marked failed, nothing delivered', async () => {
     const { db, updates } = makeDb({
       recordsRow: recordRow(crypto, dek),
-      doctorRow: { wallet_pubkey: doctor.publicKey.toBase58() },
+      appUserRow: {
+        wallet_pubkey: doctor.publicKey.toBase58(),
+        wallet_verified_at: '2026-10-08T12:00:00Z',
+      },
     });
     const solana = makeSolana({
       record: activeRecord,
@@ -324,10 +341,13 @@ describe('KeysService.release', () => {
     expect(updates[0].values.log_access_status).toBe('failed');
   });
 
-  it('RPC down on log_access -> still delivers, row stays pending', async () => {
-    const { db } = makeDb({
+  it('RPC down on log_access -> 503, nothing delivered, row marked failed', async () => {
+    const { db, updates } = makeDb({
       recordsRow: recordRow(crypto, dek),
-      doctorRow: { wallet_pubkey: doctor.publicKey.toBase58() },
+      appUserRow: {
+        wallet_pubkey: doctor.publicKey.toBase58(),
+        wallet_verified_at: '2026-10-08T12:00:00Z',
+      },
     });
     const solana = makeSolana({
       record: activeRecord,
@@ -342,22 +362,52 @@ describe('KeysService.release', () => {
       provider: { verified: true },
       sendErr: new Error('fetch failed: connection refused'),
     });
-    const res = await service(db, solana).release(user(), {
-      record_id: RECORD_ID,
-    });
-    expect(res.dek).toBeTruthy();
+    await expect(
+      service(db, solana).release(user(), { record_id: RECORD_ID }),
+    ).rejects.toMatchObject({ status: 503 });
+    expect(updates[0].values.log_access_status).toBe('failed');
   });
 
   it('disputed record -> 403 even for the patient', async () => {
     const { db } = makeDb({
       recordsRow: recordRow(crypto, dek),
-      appUserRow: { wallet_pubkey: patient.publicKey.toBase58() },
+      appUserRow: {
+        wallet_pubkey: patient.publicKey.toBase58(),
+        wallet_verified_at: '2026-10-08T12:00:00Z',
+      },
     });
     const solana = makeSolana({
       record: { ...activeRecord, status: { disputed: {} } },
     });
     await expect(
       service(db, solana).release(user(), { record_id: RECORD_ID }),
+    ).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('identity lookup error -> 503, not "no wallet" (403)', async () => {
+    const { db } = makeDb({
+      recordsRow: recordRow(crypto, dek),
+      appUserError: { message: 'connection refused' },
+    });
+    await expect(
+      service(db, makeSolana({ record: activeRecord })).release(user(), {
+        record_id: RECORD_ID,
+      }),
+    ).rejects.toMatchObject({ status: 503 });
+  });
+
+  it('stored but unverified wallet -> 403 (enrollment never ran)', async () => {
+    const { db } = makeDb({
+      recordsRow: recordRow(crypto, dek),
+      appUserRow: {
+        wallet_pubkey: patient.publicKey.toBase58(),
+        wallet_verified_at: null,
+      },
+    });
+    await expect(
+      service(db, makeSolana({ record: activeRecord })).release(user(), {
+        record_id: RECORD_ID,
+      }),
     ).rejects.toMatchObject({ status: 403 });
   });
 
@@ -371,7 +421,10 @@ describe('KeysService.release', () => {
   it('stranger wallet -> 403', async () => {
     const { db } = makeDb({
       recordsRow: recordRow(crypto, dek),
-      appUserRow: { wallet_pubkey: stranger.publicKey.toBase58() },
+      appUserRow: {
+        wallet_pubkey: stranger.publicKey.toBase58(),
+        wallet_verified_at: '2026-10-08T12:00:00Z',
+      },
     });
     await expect(
       service(db, makeSolana({ record: activeRecord })).release(user(), {
@@ -386,7 +439,10 @@ describe('KeysService.release', () => {
   ])('doctor with %s grant -> 403', async (_name, status, expiresAt) => {
     const { db } = makeDb({
       recordsRow: recordRow(crypto, dek),
-      doctorRow: { wallet_pubkey: doctor.publicKey.toBase58() },
+      appUserRow: {
+        wallet_pubkey: doctor.publicKey.toBase58(),
+        wallet_verified_at: '2026-10-08T12:00:00Z',
+      },
     });
     const solana = makeSolana({
       record: activeRecord,
@@ -408,7 +464,10 @@ describe('KeysService.release', () => {
   it('doctor with grant but suspended provider -> 403', async () => {
     const { db } = makeDb({
       recordsRow: recordRow(crypto, dek),
-      doctorRow: { wallet_pubkey: doctor.publicKey.toBase58() },
+      appUserRow: {
+        wallet_pubkey: doctor.publicKey.toBase58(),
+        wallet_verified_at: '2026-10-08T12:00:00Z',
+      },
     });
     const solana = makeSolana({
       record: activeRecord,
@@ -433,7 +492,10 @@ describe('KeysService.release', () => {
         ...recordRow(crypto, dek),
         wrapped_dek: '\\x' + 'ff'.repeat(10),
       },
-      appUserRow: { wallet_pubkey: patient.publicKey.toBase58() },
+      appUserRow: {
+        wallet_pubkey: patient.publicKey.toBase58(),
+        wallet_verified_at: '2026-10-08T12:00:00Z',
+      },
     });
     await expect(
       service(db, makeSolana({ record: activeRecord })).release(user(), {
