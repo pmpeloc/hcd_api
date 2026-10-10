@@ -14,5 +14,8 @@ import { AuthModule } from '../auth/auth.module';
   imports: [TxModule, AuthModule],
   controllers: [KeysController],
   providers: [KeysService, KeyCryptoService],
+  // RecordsModule (Mati) imports KeyCryptoService to wrap the DEK when a
+  // record is registered; the plaintext only ever crosses TLS to the API.
+  exports: [KeyCryptoService],
 })
 export class KeysModule {}
