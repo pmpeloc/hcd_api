@@ -23,7 +23,13 @@ export interface InstructionChain {
 }
 export interface ProgramClient {
   methods: Record<string, (...args: unknown[]) => InstructionChain>;
-  account: Record<string, { fetch(address: PublicKey): Promise<unknown> }>;
+  account: Record<
+    string,
+    {
+      fetch(address: PublicKey): Promise<unknown>;
+      fetchMultiple(addresses: PublicKey[]): Promise<unknown[]>;
+    }
+  >;
 }
 
 /**

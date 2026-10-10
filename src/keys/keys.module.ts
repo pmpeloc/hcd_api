@@ -2,7 +2,6 @@ import { Module } from '@nestjs/common';
 import { KeysController } from './keys.controller';
 import { KeysService } from './keys.service';
 import { KeyCryptoService } from './key-crypto.service';
-import { SupabaseAdminFactory } from './supabase-admin.factory';
 import { TxModule } from '../tx/tx.module';
 import { AuthModule } from '../auth/auth.module';
 
@@ -14,7 +13,7 @@ import { AuthModule } from '../auth/auth.module';
 @Module({
   imports: [TxModule, AuthModule],
   controllers: [KeysController],
-  providers: [KeysService, KeyCryptoService, SupabaseAdminFactory],
+  providers: [KeysService, KeyCryptoService],
   // RecordsModule (Mati) imports KeyCryptoService to wrap the DEK when a
   // record is registered; the plaintext only ever crosses TLS to the API.
   exports: [KeyCryptoService],

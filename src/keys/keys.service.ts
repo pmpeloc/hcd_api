@@ -11,7 +11,7 @@ import { ConfigService } from '@nestjs/config';
 import { TransactionInstruction } from '@solana/web3.js';
 import { SolanaService, PublicKey } from '../tx/solana.service';
 import { KeyCryptoService } from './key-crypto.service';
-import { SupabaseAdminFactory } from './supabase-admin.factory';
+import { SupabaseAdminFactory } from '../auth/supabase-admin.factory';
 import type { AuthenticatedUser } from '../auth/authenticated-request';
 import { keyReleaseIdSchema, recordRowSchema } from './keys-schemas';
 import type { RecordRow, ReleaseKeyDto } from './keys-schemas';
@@ -46,6 +46,8 @@ export interface ReleaseResponse {
   download_url: string;
   expires_in: number;
   content_hash: string; // hex
+  // No encryption_iv: the stored object is the sealed file `iv(12) || ct+tag`,
+  // so the IV travels inside the download and is covered by content_hash.
 }
 
 const anchorEnum = (v: Record<string, object>): string => Object.keys(v)[0];
