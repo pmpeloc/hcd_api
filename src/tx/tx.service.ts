@@ -8,6 +8,8 @@ import { TxBuilderService } from './tx-builder.service';
 import { PendingTxStore } from './pending-tx.store';
 import { FeeBudgetService } from './fee-budget.service';
 import { RecordReservationService } from './record-reservation.service';
+import { SupabaseAdminFactory } from '../auth/supabase-admin.factory';
+import type { AuthenticatedUser } from '../auth/authenticated-request';
 import type { BuildTxDto, SubmitTxDto } from './tx-schemas';
 
 const { web3 } = anchor;
@@ -45,9 +47,10 @@ export class TxService {
     private readonly pending: PendingTxStore,
     private readonly budget: FeeBudgetService,
     private readonly reservations: RecordReservationService,
+    private readonly admin: SupabaseAdminFactory,
   ) {}
 
-  async build(body: BuildTxDto) {
+  async build(user: AuthenticatedUser, body: BuildTxDto) {
     if (body.instruction === 'issue_record') {
       // Authorize against the persisted upload reservation BEFORE building:
       // a doctor may only anchor the ciphertext they registered, for the
@@ -62,6 +65,7 @@ export class TxService {
 
     const { tx, signer, needsKeyService, estimatedLamports } =
       await this.builder.build(body);
+    await this.assertSignerVerified(user, signer);
 
     const { blockhash, lastValidBlockHeight } = await this.getLatestBlockhash();
     tx.feePayer = this.solana.feePayer.publicKey;
@@ -69,7 +73,7 @@ export class TxService {
 
     const message = tx.serializeMessage();
     const txId = randomUUID();
-    this.pending.save({
+    await this.pending.save({
       txId,
       instruction: body.instruction,
       signer,
@@ -91,7 +95,7 @@ export class TxService {
   }
 
   async submit(body: SubmitTxDto) {
-    const pending = this.pending.get(body.tx_id);
+    const pending = await this.pending.get(body.tx_id);
     if (!pending) {
       throw new HttpException(
         'unknown, used or expired tx_id - call /tx/build again',
@@ -136,7 +140,7 @@ export class TxService {
     }
 
     // 3. Budget + user quota before co-signing.
-    this.budget.assertWithinLimits(
+    await this.budget.assertWithinLimits(
       pending.estimatedLamports,
       pending.signer.toBase58(),
     );
@@ -152,7 +156,7 @@ export class TxService {
       tx,
       pending.lastValidBlockHeight,
     );
-    this.pending.consume(body.tx_id);
+    await this.pending.consume(body.tx_id);
 
     // 5. Record the actual fee-payer balance delta in the daily counter.
     void this.correctSpend(signature, pending.signer.toBase58());
@@ -186,6 +190,44 @@ export class TxService {
         HttpStatus.SERVICE_UNAVAILABLE,
       );
     }
+  }
+
+  /**
+   * The declared signer must be the wallet this user enrolled through
+   * /auth/wallet/verify: app_user.wallet_pubkey matches AND
+   * wallet_verified_at is set (proof of possession happened there). A JWT
+   * alone does not prove key control, and a doctors row alone is not proof
+   * either — enrollment is the only path that sets verified wallets.
+   */
+  private async assertSignerVerified(
+    user: AuthenticatedUser,
+    signer: anchor.web3.PublicKey,
+  ) {
+    const db = this.admin.create();
+    const { data: appUser, error } = await db
+      .from('app_user')
+      .select('wallet_pubkey, wallet_verified_at')
+      .eq('id', user.id)
+      .maybeSingle();
+    if (error) {
+      // A failed identity read is not "no wallet": fail closed with 503 so
+      // callers can retry instead of being told they are not enrolled.
+      throw new HttpException(
+        'identity lookup unavailable',
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
+    }
+    if (
+      appUser?.wallet_verified_at &&
+      appUser.wallet_pubkey === signer.toBase58()
+    ) {
+      return;
+    }
+    throw new HttpException(
+      'signer is not the verified wallet of the authenticated user - ' +
+        'complete wallet enrollment first',
+      HttpStatus.FORBIDDEN,
+    );
   }
 
   private async getLatestBlockhash() {
@@ -301,6 +343,6 @@ export class TxService {
     } catch {
       // Can't read the delta: count the tx anyway, spend stays unrecorded.
     }
-    this.budget.recordSpend(actual, signer);
+    await this.budget.recordSpend(actual, signer);
   }
 }

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { createPrivateKey, sign as cryptoSign } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
+
 import * as anchor from '@anchor-lang/core';
 import { SolanaService } from './solana.service';
 import { TxBuilderService } from './tx-builder.service';
@@ -8,13 +9,15 @@ import { TxService } from './tx.service';
 import { PendingTxStore } from './pending-tx.store';
 import { FeeBudgetService } from './fee-budget.service';
 import { RecordReservationService } from './record-reservation.service';
-import type { SupabaseAdminFactory } from '../auth/supabase-admin.factory';
 import { buildTxSchema } from './tx-schemas';
+import { SupabaseAdminFactory } from '../auth/supabase-admin.factory';
+import type { AuthenticatedUser } from '../auth/authenticated-request';
 
 const { web3 } = anchor;
 const { Keypair, Transaction } = web3;
 
 const kp = () => Keypair.generate();
+
 const b64 = (tx: anchor.web3.Transaction) =>
   tx
     .serialize({ requireAllSignatures: false, verifySignatures: false })
@@ -31,6 +34,137 @@ const makeEnv = (
   TX_DAILY_BUDGET_LAMPORTS: '200000000',
   ...extra,
 });
+
+const AUTH_USER: AuthenticatedUser = {
+  id: '00000000-0000-4000-8000-000000000001',
+  role: 'patient',
+  organizationId: null,
+  status: 'active',
+};
+
+/** Minimal Supabase mock covering the verified-wallet check in build() and
+ * the Postgres-backed pending_tx / fee-payer tables. The query-builder chain
+ * is emulated per table; rpc() implements fee_payer_record. */
+function makeAdminDb(
+  opts: {
+    appUserWallet?: string | null;
+    verified?: boolean;
+    error?: { message: string };
+  } = {},
+) {
+  type Row = Record<string, unknown>;
+  const pendingRows = new Map<string, Row>();
+  const spend = new Map<string, Row>();
+  const quota = new Map<string, Row>();
+  const db = {
+    from: (table: string) => {
+      if (table === 'pending_tx') {
+        return {
+          insert: (row: Row) => {
+            pendingRows.set(row.tx_id as string, { used: false, ...row });
+            return Promise.resolve({ error: null });
+          },
+          select: () => ({
+            eq: (_c: string, id: string) => ({
+              eq: (_c2: string, used: boolean) => ({
+                gt: (_c3: string, now: string) => ({
+                  maybeSingle: () => {
+                    const r = pendingRows.get(id);
+                    const ok =
+                      r &&
+                      r.used === used &&
+                      Date.parse(r.expires_at as string) > Date.parse(now);
+                    return Promise.resolve({ data: ok ? r : null });
+                  },
+                }),
+              }),
+            }),
+          }),
+          update: (values: Row) => ({
+            eq: (_c: string, id: string) => ({
+              eq: () => {
+                const r = pendingRows.get(id);
+                if (r) Object.assign(r, values);
+                return Promise.resolve({ error: null });
+              },
+            }),
+          }),
+          delete: () => ({
+            lt: (_c: string, now: string) => {
+              for (const [k, r] of pendingRows) {
+                if (Date.parse(r.expires_at as string) < Date.parse(now)) {
+                  pendingRows.delete(k);
+                }
+              }
+              return Promise.resolve({ error: null });
+            },
+          }),
+        };
+      }
+      if (table === 'fee_payer_spend') {
+        return {
+          select: () => ({
+            eq: (_c: string, day: string) => ({
+              maybeSingle: () =>
+                Promise.resolve({ data: spend.get(day) ?? null }),
+            }),
+          }),
+        };
+      }
+      if (table === 'fee_payer_user_txs') {
+        return {
+          select: () => ({
+            eq: (_c: string, day: string) => ({
+              eq: (_c2: string, signer: string) => ({
+                maybeSingle: () =>
+                  Promise.resolve({
+                    data: quota.get(`${day}:${signer}`) ?? null,
+                  }),
+              }),
+            }),
+          }),
+        };
+      }
+      return {
+        select: () => ({
+          eq: () => ({
+            maybeSingle: () =>
+              Promise.resolve({
+                data: opts.appUserWallet
+                  ? {
+                      wallet_pubkey: opts.appUserWallet,
+                      wallet_verified_at:
+                        (opts.verified ?? true) ? '2026-10-08T12:00:00Z' : null,
+                    }
+                  : null,
+                error: opts.error ?? null,
+              }),
+          }),
+        }),
+      };
+    },
+    rpc: (
+      fn: string,
+      args: { p_day: string; p_lamports: number; p_signer: string },
+    ) => {
+      if (fn === 'fee_payer_record') {
+        const s = (spend.get(args.p_day) ?? {
+          day: args.p_day,
+          lamports: 0,
+        }) as { lamports: number };
+        s.lamports += args.p_lamports;
+        spend.set(args.p_day, s);
+        const k = `${args.p_day}:${args.p_signer}`;
+        const q = (quota.get(k) ?? { tx_count: 0 }) as { tx_count: number };
+        q.tx_count += 1;
+        quota.set(k, q);
+      }
+      return Promise.resolve({ error: null });
+    },
+  };
+  const admin = { create: () => db } as unknown as SupabaseAdminFactory;
+  return { admin };
+}
 
 type DbRows = {
   record?: Record<string, unknown> | null;
@@ -104,16 +238,28 @@ const validReservation = (
   patient: { wallet_pubkey: patient },
 });
 
-function makeService(env: Record<string, string>, dbRows: DbRows = {}) {
+function makeService(
+  env: Record<string, string>,
+  admin?: SupabaseAdminFactory,
+  reservationRows: DbRows = {},
+) {
   const config = { get: (k: string) => env[k] } as ConfigService;
   const solana = new SolanaService(config);
   const builder = new TxBuilderService(solana);
-  const store = new PendingTxStore();
-  const budget = new FeeBudgetService(config, solana);
+  const db = admin ?? makeAdminDb().admin;
+  const store = new PendingTxStore(db);
+  const budget = new FeeBudgetService(config, solana, db);
   const reservations = new RecordReservationService({
-    create: () => makeDb(dbRows),
+    create: () => makeDb(reservationRows),
   } as unknown as SupabaseAdminFactory);
-  const service = new TxService(solana, builder, store, budget, reservations);
+  const service = new TxService(
+    solana,
+    builder,
+    store,
+    budget,
+    reservations,
+    db,
+  );
   return { solana, builder, store, budget, service };
 }
 
@@ -132,7 +278,10 @@ describe('TxService', () => {
   });
 
   beforeEach(() => {
-    ({ solana, service } = makeService(makeEnv(feePayer, keyService)));
+    ({ solana, service } = makeService(
+      makeEnv(feePayer, keyService),
+      makeAdminDb({ appUserWallet: user.publicKey.toBase58() }).admin,
+    ));
     jest.spyOn(solana.connection, 'getLatestBlockhash').mockResolvedValue({
       blockhash: kp().publicKey.toBase58(),
       lastValidBlockHeight: 100,
@@ -150,14 +299,14 @@ describe('TxService', () => {
   });
 
   const buildAndSign = async (body = disputeBody(), signer = user) => {
-    const built = await service.build(body);
+    const built = await service.build(AUTH_USER, body);
     const tx = Transaction.from(Buffer.from(built.tx_base64, 'base64'));
     tx.partialSign(signer);
     return { tx_id: built.tx_id, signed_tx_base64: b64(tx), tx };
   };
 
   it('builds a tx with the backend fee payer and stores the message', async () => {
-    const built = await service.build(disputeBody());
+    const built = await service.build(AUTH_USER, disputeBody());
     const tx = Transaction.from(Buffer.from(built.tx_base64, 'base64'));
     expect(tx.feePayer?.equals(feePayer.publicKey)).toBe(true);
     expect(built.tx_base64).toBeTruthy();
@@ -175,9 +324,9 @@ describe('TxService', () => {
   });
 
   it('rejects a tampered transaction byte-by-byte with 403', async () => {
-    const built = await service.build(disputeBody());
+    const built = await service.build(AUTH_USER, disputeBody());
     // A DIFFERENT valid transaction signed by the same user.
-    const other = await service.build({
+    const other = await service.build(AUTH_USER, {
       instruction: 'revoke_access',
       signer: user.publicKey.toBase58(),
       args: { grant: kp().publicKey.toBase58() },
@@ -190,7 +339,7 @@ describe('TxService', () => {
   });
 
   it('rejects when the user signature is missing (400)', async () => {
-    const built = await service.build(disputeBody());
+    const built = await service.build(AUTH_USER, disputeBody());
     await expect(
       service.submit({ tx_id: built.tx_id, signed_tx_base64: built.tx_base64 }),
     ).rejects.toMatchObject({ status: 400 });
@@ -199,7 +348,7 @@ describe('TxService', () => {
   it('rejects a signature from a different wallet (400)', async () => {
     // Attacker signs the exact same message with a different key and drops
     // the signature into the expected signer's slot.
-    const built = await service.build(disputeBody());
+    const built = await service.build(AUTH_USER, disputeBody());
     const tx = Transaction.from(Buffer.from(built.tx_base64, 'base64'));
     const wrong = kp();
     const key = createPrivateKey({
@@ -240,6 +389,7 @@ describe('TxService', () => {
   it('daily budget exhausted -> 429 before co-signing', async () => {
     ({ solana, service } = makeService(
       makeEnv(feePayer, keyService, { TX_DAILY_BUDGET_LAMPORTS: '10' }),
+      makeAdminDb({ appUserWallet: user.publicKey.toBase58() }).admin,
     ));
     jest.spyOn(solana.connection, 'getLatestBlockhash').mockResolvedValue({
       blockhash: kp().publicKey.toBase58(),
@@ -259,7 +409,11 @@ describe('TxService', () => {
   // Rebuilds the service with a reservation DB and re-mocks the RPC on the
   // fresh SolanaService (issue_record fetches patientProfile).
   const issueSetup = (rows: DbRows) => {
-    ({ solana, service } = makeService(makeEnv(feePayer, keyService), rows));
+    ({ solana, service } = makeService(
+      makeEnv(feePayer, keyService),
+      makeAdminDb({ appUserWallet: user.publicKey.toBase58() }).admin,
+      rows,
+    ));
     jest.spyOn(solana.connection, 'getLatestBlockhash').mockResolvedValue({
       blockhash: kp().publicKey.toBase58(),
       lastValidBlockHeight: 100,
@@ -286,7 +440,10 @@ describe('TxService', () => {
     jest
       .spyOn(s.program.account.patientProfile, 'fetch')
       .mockResolvedValue({ nextRecordId: { toNumber: () => 0 } });
-    const built = await service.build(issueBody(patient.publicKey.toBase58()));
+    const built = await service.build(
+      AUTH_USER,
+      issueBody(patient.publicKey.toBase58()),
+    );
     const tx = Transaction.from(Buffer.from(built.tx_base64, 'base64'));
     // Three required signers: fee payer, issuer, key_service.
     const compiled = tx.compileMessage();
@@ -309,7 +466,7 @@ describe('TxService', () => {
       .spyOn(s.program.account.patientProfile, 'fetch')
       .mockRejectedValue(new Error('Account does not exist'));
     await expect(
-      service.build(issueBody(patient.publicKey.toBase58())),
+      service.build(AUTH_USER, issueBody(patient.publicKey.toBase58())),
     ).rejects.toMatchObject({ status: 404 });
   });
 
@@ -317,7 +474,7 @@ describe('TxService', () => {
     // No matching records row: the reservation lookup returns null.
     issueSetup({ record: null });
     await expect(
-      service.build(issueBody(kp().publicKey.toBase58())),
+      service.build(AUTH_USER, issueBody(kp().publicKey.toBase58())),
     ).rejects.toMatchObject({ status: 404 });
   });
 
@@ -329,7 +486,7 @@ describe('TxService', () => {
     rows.record = { ...rows.record, status: 'active' };
     issueSetup(rows);
     await expect(
-      service.build(issueBody(kp().publicKey.toBase58())),
+      service.build(AUTH_USER, issueBody(kp().publicKey.toBase58())),
     ).rejects.toMatchObject({ status: 409 });
   });
 
@@ -338,7 +495,9 @@ describe('TxService', () => {
     issueSetup(
       validReservation(user.publicKey.toBase58(), patient, 'cd'.repeat(32)),
     );
-    await expect(service.build(issueBody(patient))).rejects.toMatchObject({
+    await expect(
+      service.build(AUTH_USER, issueBody(patient)),
+    ).rejects.toMatchObject({
       status: 403,
     });
   });
@@ -347,7 +506,9 @@ describe('TxService', () => {
     const patient = kp().publicKey.toBase58();
     // Reservation belongs to a different issuer wallet.
     issueSetup(validReservation(kp().publicKey.toBase58(), patient));
-    await expect(service.build(issueBody(patient))).rejects.toMatchObject({
+    await expect(
+      service.build(AUTH_USER, issueBody(patient)),
+    ).rejects.toMatchObject({
       status: 403,
     });
   });
@@ -357,7 +518,9 @@ describe('TxService', () => {
     const rows = validReservation(user.publicKey.toBase58(), patient);
     rows.doctor = { ...rows.doctor, verified: false };
     issueSetup(rows);
-    await expect(service.build(issueBody(patient))).rejects.toMatchObject({
+    await expect(
+      service.build(AUTH_USER, issueBody(patient)),
+    ).rejects.toMatchObject({
       status: 403,
     });
   });
@@ -367,14 +530,14 @@ describe('TxService', () => {
       validReservation(user.publicKey.toBase58(), kp().publicKey.toBase58()),
     );
     await expect(
-      service.build(issueBody(kp().publicKey.toBase58())),
+      service.build(AUTH_USER, issueBody(kp().publicKey.toBase58())),
     ).rejects.toMatchObject({ status: 403 });
   });
 
   it('issue_record 503s when the reservation lookup fails', async () => {
     issueSetup({ error: { message: 'db down' } });
     await expect(
-      service.build(issueBody(kp().publicKey.toBase58())),
+      service.build(AUTH_USER, issueBody(kp().publicKey.toBase58())),
     ).rejects.toMatchObject({ status: 503 });
   });
 
@@ -414,7 +577,7 @@ describe('TxService', () => {
 
   it('grant_access rejects a past expires_at', async () => {
     await expect(
-      service.build({
+      service.build(AUTH_USER, {
         instruction: 'grant_access',
         signer: user.publicKey.toBase58(),
         args: {
@@ -424,5 +587,52 @@ describe('TxService', () => {
         },
       }),
     ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it('rejects a signer that is not the enrolled wallet (403)', async () => {
+    ({ solana, service } = makeService(
+      makeEnv(feePayer, keyService),
+      makeAdminDb({ appUserWallet: kp().publicKey.toBase58() }).admin,
+    ));
+    jest.spyOn(solana.connection, 'getLatestBlockhash').mockResolvedValue({
+      blockhash: kp().publicKey.toBase58(),
+      lastValidBlockHeight: 100,
+    });
+    await expect(service.build(AUTH_USER, disputeBody())).rejects.toMatchObject(
+      { status: 403 },
+    );
+  });
+
+  it('rejects a wallet that is stored but never verified (403)', async () => {
+    ({ solana, service } = makeService(
+      makeEnv(feePayer, keyService),
+      makeAdminDb({
+        appUserWallet: user.publicKey.toBase58(),
+        verified: false,
+      }).admin,
+    ));
+    await expect(service.build(AUTH_USER, disputeBody())).rejects.toMatchObject(
+      { status: 403 },
+    );
+  });
+
+  it('rejects when the user has no enrolled wallet at all (403)', async () => {
+    ({ solana, service } = makeService(
+      makeEnv(feePayer, keyService),
+      makeAdminDb({ appUserWallet: null }).admin,
+    ));
+    await expect(service.build(AUTH_USER, disputeBody())).rejects.toMatchObject(
+      { status: 403 },
+    );
+  });
+
+  it('fails closed with 503 when the identity lookup errors', async () => {
+    ({ solana, service } = makeService(
+      makeEnv(feePayer, keyService),
+      makeAdminDb({ error: { message: 'connection refused' } }).admin,
+    ));
+    await expect(service.build(AUTH_USER, disputeBody())).rejects.toMatchObject(
+      { status: 503 },
+    );
   });
 });

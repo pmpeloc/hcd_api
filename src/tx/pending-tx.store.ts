@@ -1,5 +1,11 @@
-import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import type { PublicKey } from './solana.service';
+import {
+  Injectable,
+  InternalServerErrorException,
+  OnModuleDestroy,
+  OnModuleInit,
+} from '@nestjs/common';
+import { PublicKey } from './solana.service';
+import { SupabaseAdminFactory } from '../auth/supabase-admin.factory';
 
 export interface PendingTx {
   txId: string;
@@ -18,23 +24,37 @@ export interface PendingTx {
   used: boolean;
 }
 
+interface PendingTxRow {
+  tx_id: string;
+  instruction: string;
+  signer: string;
+  message_b64: string;
+  last_valid_block_height: number;
+  needs_key_service: boolean;
+  estimated_lamports: number;
+  expires_at: string;
+  used: boolean;
+}
+
 /**
  * Short-lived store for transactions built but not yet submitted. The entry
  * lives at most ~2 minutes (a devnet blockhash is valid for ~150 slots) and
  * is single-use: consumed on submit or expired, never replayed.
  *
- * In-memory for now: a restart drops pending transactions, which only forces
- * the client to call /tx/build again. Swap for the Postgres `pending_tx`
- * table when the database schema lands (same interface).
+ * Backed by the `pending_tx` table (service role only, RLS denies everyone
+ * else): a restart no longer drops pending envelopes and several API
+ * instances can share the flow. Expired rows are swept periodically; the
+ * SELECT also filters them, so a missed sweep only wastes storage.
  */
 @Injectable()
 export class PendingTxStore implements OnModuleInit, OnModuleDestroy {
   private readonly ttlMs = 120_000;
-  private readonly store = new Map<string, PendingTx>();
   private sweeper?: NodeJS.Timeout;
 
+  constructor(private readonly admin: SupabaseAdminFactory) {}
+
   onModuleInit() {
-    this.sweeper = setInterval(() => this.purge(), 30_000);
+    this.sweeper = setInterval(() => void this.purge(), 30_000);
     this.sweeper.unref();
   }
 
@@ -42,34 +62,76 @@ export class PendingTxStore implements OnModuleInit, OnModuleDestroy {
     if (this.sweeper) clearInterval(this.sweeper);
   }
 
-  save(entry: Omit<PendingTx, 'expiresAt' | 'used'>): PendingTx {
+  async save(entry: Omit<PendingTx, 'expiresAt' | 'used'>): Promise<PendingTx> {
     const pending: PendingTx = {
       ...entry,
       expiresAt: Date.now() + this.ttlMs,
       used: false,
     };
-    this.store.set(pending.txId, pending);
+    const { error } = await this.admin
+      .create()
+      .from('pending_tx')
+      .insert({
+        tx_id: pending.txId,
+        instruction: pending.instruction,
+        signer: pending.signer.toBase58(),
+        message_b64: pending.message.toString('base64'),
+        last_valid_block_height: pending.lastValidBlockHeight,
+        needs_key_service: pending.needsKeyService,
+        estimated_lamports: pending.estimatedLamports,
+        expires_at: new Date(pending.expiresAt).toISOString(),
+      });
+    if (error) {
+      throw new InternalServerErrorException('pending tx write failed');
+    }
     return pending;
   }
 
   /** Returns the pending tx, or undefined if unknown, used or expired. */
-  get(txId: string): PendingTx | undefined {
-    const pending = this.store.get(txId);
-    if (!pending || pending.used || pending.expiresAt < Date.now()) {
-      return undefined;
+  async get(txId: string): Promise<PendingTx | undefined> {
+    const { data, error } = await this.admin
+      .create()
+      .from('pending_tx')
+      .select(
+        'tx_id, instruction, signer, message_b64, last_valid_block_height,' +
+          ' needs_key_service, estimated_lamports, expires_at, used',
+      )
+      .eq('tx_id', txId)
+      .eq('used', false)
+      .gt('expires_at', new Date().toISOString())
+      .maybeSingle();
+    if (error) {
+      throw new InternalServerErrorException('pending tx read failed');
     }
-    return pending;
+    const row = data as PendingTxRow | null;
+    if (!row) return undefined;
+    return {
+      txId: row.tx_id,
+      instruction: row.instruction,
+      signer: new PublicKey(row.signer),
+      message: Buffer.from(row.message_b64, 'base64'),
+      lastValidBlockHeight: Number(row.last_valid_block_height),
+      needsKeyService: row.needs_key_service,
+      estimatedLamports: Number(row.estimated_lamports),
+      expiresAt: new Date(row.expires_at).getTime(),
+      used: row.used,
+    };
   }
 
-  consume(txId: string) {
-    const pending = this.store.get(txId);
-    if (pending) pending.used = true;
+  async consume(txId: string): Promise<void> {
+    await this.admin
+      .create()
+      .from('pending_tx')
+      .update({ used: true })
+      .eq('tx_id', txId)
+      .eq('used', false);
   }
 
-  private purge() {
-    const now = Date.now();
-    for (const [id, p] of this.store) {
-      if (p.used || p.expiresAt < now) this.store.delete(id);
-    }
+  private async purge() {
+    await this.admin
+      .create()
+      .from('pending_tx')
+      .delete()
+      .lt('expires_at', new Date().toISOString());
   }
 }

@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { AuthModule } from '../auth/auth.module';
 import { TxController } from './tx.controller';
 import { TxService } from './tx.service';
 import { TxBuilderService } from './tx-builder.service';
@@ -6,7 +7,6 @@ import { SolanaService } from './solana.service';
 import { PendingTxStore } from './pending-tx.store';
 import { FeeBudgetService } from './fee-budget.service';
 import { RecordReservationService } from './record-reservation.service';
-import { AuthModule } from '../auth/auth.module';
 
 // Transaction builder and fee payer (owner: Franco). The backend builds the
 // transaction, the user signs it, and the backend verifies it byte by byte
