@@ -2,9 +2,10 @@
 // a throwaway keypair; the fee payer covers rent.
 import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
+import { confirmRegistration } from './confirm-registration.mts';
 const require = createRequire(import.meta.url);
 const anchor = require('@anchor-lang/core');
-const { AnchorProvider, BN, Program, Wallet, web3 } = anchor;
+const { AnchorProvider, Program, Wallet, web3 } = anchor;
 const { Connection, Keypair, PublicKey, SystemProgram } = web3;
 const env = readFileSync('.env', 'utf8');
 const get = (k: string) => env.match(new RegExp('^' + k + '=(.*)$', 'm'))?.[1].trim()!;
@@ -25,12 +26,24 @@ const tx = await program.methods
   })
   .transaction();
 tx.feePayer = feePayer.publicKey;
-const { blockhash } = await conn.getLatestBlockhash();
+const lifetime = await conn.getLatestBlockhash('confirmed');
+const { blockhash } = lifetime;
 tx.recentBlockhash = blockhash;
 tx.sign(clinic, feePayer);
 const sig = await conn.sendRawTransaction(tx.serialize());
-await conn.confirmTransaction(sig, 'confirmed');
+await confirmRegistration(
+  sig,
+  lifetime,
+  (strategy) => conn.confirmTransaction(strategy, 'confirmed'),
+  async () => {
+    const account = await program.account.provider.fetchNullable(
+      pda(Buffer.from('provider'), clinic.publicKey.toBuffer()),
+      'confirmed',
+    );
+    return Boolean(account && account.authority.equals(clinic.publicKey)
+      && account.organization.equals(clinic.publicKey) && 'clinic' in account.providerType);
+  },
+);
 console.log('clinic_wallet:', clinic.publicKey.toBase58());
 console.log('provider_pda:', pda(Buffer.from('provider'), clinic.publicKey.toBuffer()).toBase58());
 console.log('signature:', sig);
-console.log('clinic_secret_b58:', bs58.encode(clinic.secretKey));
