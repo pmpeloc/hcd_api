@@ -15,9 +15,11 @@ select table_name, column_name, grantee, privilege_type from information_schema.
   where table_schema='public' and grantee in ('PUBLIC','anon','authenticated','service_role')
   order by table_name, column_name, grantee, privilege_type;
 select r.rolname, c.relname, p.privilege,
-  has_table_privilege(r.oid,c.oid,p.privilege) as effective
+  case when p.privilege='MAINTAIN' and current_setting('server_version_num')::integer < 170000
+    then null else has_table_privilege(r.oid,c.oid,p.privilege) end as effective
   from pg_roles r cross join pg_class c
-  cross join (values ('SELECT'),('INSERT'),('UPDATE'),('DELETE'),('TRUNCATE')) p(privilege)
+  cross join (values ('SELECT'),('INSERT'),('UPDATE'),('DELETE'),('TRUNCATE'),
+    ('REFERENCES'),('TRIGGER'),('MAINTAIN')) p(privilege)
   where r.rolname in ('anon','authenticated','service_role')
   and c.relnamespace='public'::regnamespace and c.relkind='r'
   order by c.relname,r.rolname,p.privilege;
@@ -29,7 +31,8 @@ select p.oid::regprocedure as function_name, pg_get_userbyid(p.proowner) as owne
 select pg_get_userbyid(defaclrole) as creator, defaclnamespace::regnamespace as schema_name,
   defaclobjtype,defaclacl from pg_default_acl;
 -- Presence only: history SQL text can contain secrets; never dump statements.
-select to_regclass('supabase_migrations.schema_migrations') as migration_history;
+select to_regclass('supabase_migrations.schema_migrations') as migration_history,
+  to_regclass('supabase_migrations.schema_migrations') is not null as migration_history_present;
 commit;
 -- If history exists, the operator may separately run:
 -- select version from supabase_migrations.schema_migrations order by version;

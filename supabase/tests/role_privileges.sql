@@ -21,6 +21,9 @@ do $$ declare r text; t text; begin
         'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'), r||' cannot write '||t);
       perform pg_temp.assert_true(not has_any_column_privilege(r,'public.'||t,
         'INSERT,UPDATE,REFERENCES'), r||' cannot write columns '||t);
+      if current_setting('server_version_num')::integer >= 170000 then
+        perform pg_temp.assert_true(not has_table_privilege(r,'public.'||t,'MAINTAIN'),r||' cannot maintain '||t);
+      end if;
     end loop;
     perform pg_temp.assert_true(not has_column_privilege(r,'public.records','wrapped_dek','SELECT'),r||' no DEK');
     perform pg_temp.assert_true(not has_column_privilege(r,'public.records','storage_path','SELECT'),r||' no path');
@@ -106,6 +109,7 @@ select pg_temp.expect_denied('select wrapped_dek from public.records');
 select pg_temp.expect_denied('select storage_path from public.records');
 select pg_temp.expect_denied('select * from public.records');
 select pg_temp.expect_denied('update public.records set status=''active''');
+select pg_temp.expect_denied('truncate public.pending_tx');
 select pg_temp.expect_denied('select public.fee_payer_record(''2000-01-01'',1,''synthetic'')');
 select pg_temp.expect_denied('select public.complete_wallet_enrollment(null,null)');
 do $$ declare t text; begin
@@ -121,6 +125,7 @@ reset role;
 set local role anon;
 select pg_temp.expect_denied('select id from public.records');
 select pg_temp.expect_denied('select * from public.app_user');
+select pg_temp.expect_denied('truncate public.pending_tx');
 select pg_temp.expect_denied('select public.complete_wallet_enrollment(null,null)');
 select pg_temp.expect_denied('select public.fee_payer_record(''2000-01-01'',1,''synthetic'')');
 reset role;

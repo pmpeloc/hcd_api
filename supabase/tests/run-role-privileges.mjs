@@ -44,7 +44,7 @@ sql('postgres', `do $$ begin
  if not exists(select 1 from pg_roles where rolname='authenticated') then create role authenticated; end if;
  if not exists(select 1 from pg_roles where rolname='service_role') then create role service_role bypassrls; end if;
 end $$;`);
-for (const scenario of ['clean', 'excessive', 'inherited']) {
+for (const scenario of ['clean', 'excessive', 'observed_acl_pattern', 'inherited']) {
   const suffix = randomUUID().replaceAll('-', '');
   const db = `salua_priv_${suffix}`;
   const inheritedRole = `priv_test_${suffix}`;
@@ -58,6 +58,21 @@ for (const scenario of ['clean', 'excessive', 'inherited']) {
     for (const name of readdirSync(`${root}/migrations`).filter(n => n.endsWith('.sql') && n < migration).sort()) {
       sql(db, readFileSync(`${root}/migrations/${name}`, 'utf8'));
     }
+    if (scenario === 'observed_acl_pattern') sql(db, `
+      -- Reproduce the observed ACL pattern, not the unknown historical SQL.
+      alter default privileges in schema public grant select,truncate,references,trigger on tables to authenticated;
+      alter default privileges in schema public grant truncate,references,trigger on tables to anon;
+      grant all on all tables in schema public to service_role;
+      grant truncate,references,trigger on public.access_requests,public.app_user,
+        public.audit_events,public.doctors,public.fee_payer_spend,public.fee_payer_user_txs,
+        public.key_releases,public.organizations,public.patient_codes,public.pending_tx,
+        public.records,public.staff_members to anon,authenticated;
+      grant select on public.access_requests,public.app_user,public.audit_events,
+        public.doctors,public.key_releases,public.organizations,public.staff_members to authenticated;
+      grant execute on function public.get_my_organization_id() to anon;
+      do $$ begin if current_setting('server_version_num')::integer >= 170000 then
+        execute 'grant maintain on public.records,public.pending_tx to anon,authenticated';
+      end if; end $$;`);
     const shape = sql(db, shapeQuery);
     if (scenario === 'excessive') sql(db, `
       grant all on all tables in schema public to public,anon,authenticated,service_role;

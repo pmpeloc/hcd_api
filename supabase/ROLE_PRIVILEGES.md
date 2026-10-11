@@ -1,7 +1,8 @@
 # Proposed role privilege reconciliation
 
 This is a new, reviewable proposal based on the checked-in schema and API, **not**
-the missing `20261014_role_privileges.sql` and not a claim about shared Supabase.
+the missing `20261014_role_privileges.sql`. The read-only snapshot below records
+the shared database observations separately from the proposed changes.
 The new version is `20261015000000`; do not rename or overwrite an applied migration.
 
 ## Evidence matrix
@@ -26,6 +27,39 @@ uses the explicit metadata column list from the prior column-privilege migration
 No browser role can read wrapped_dek/storage_path, write domain tables, or access
 credential stores/backend RPCs. No new RLS policies or default privileges are added.
 Future migrations must grant their own privileges explicitly.
+
+## Read-only shared catalog snapshot (2026-10-11)
+
+The locally configured database connection matched the configured Supabase project
+reference. Catalog queries ran with `default_transaction_read_only=on`, bounded
+timeouts and explicit read-only transactions. No patient rows, migration SQL text,
+DDL, writes or destructive privilege probes were executed. Raw catalog output stays
+outside Git; the administrator still needs to confirm the dashboard project.
+
+- PostgreSQL reports 17.11; all 15 Salua tables have RLS. `service_role` bypasses
+  RLS and already has broad table grants. Missing backend grants are therefore
+  **not** an established current hosted failure.
+- Both `anon` and `authenticated` have effective TRUNCATE, REFERENCES, TRIGGER and
+  MAINTAIN permissions on 12 tables: access_requests, app_user, audit_events,
+  doctors, fee_payer_spend, fee_payer_user_txs, key_releases, organizations,
+  patient_codes, pending_tx, records and staff_members. These SQL capabilities
+  exceed the intended read-only surface; this does not establish an exposed HTTP
+  exploit or prove that anyone used them. The reconciliation removes direct grants.
+- Neither browser role can SELECT records.wrapped_dek or records.storage_path.
+  Enrollment and fee-counter RPC execution is restricted to service_role among
+  the three API roles. The RLS organization helper is also executable by anon;
+  the proposal removes that unnecessary grant.
+- `supabase_migrations.schema_migrations` is absent. This does not prove which
+  SQL was run manually or elsewhere. Do not synthesize history entries or apply
+  every checked-in migration to an already existing schema.
+- Broad defaults for future public objects remain. The scoped reconciliation
+  deliberately leaves them unchanged: future migrations must explicitly revoke
+  excessive grants, or the operator must approve a separate default-ACL change
+  after reviewing all object creators and integrations.
+
+The local `observed_acl_pattern` scenario reproduces these relevant permission
+classes over the checked-in schema. It is not an exact database clone or a claim
+to recover the historical SQL. Hosted application/Storage/devnet smoke remains open.
 
 The migration resets direct table and column ACLs for the named Salua objects and
 roles only, then grants this matrix. It also limits the two identity sequences and
@@ -87,4 +121,6 @@ sequence grants, repeat application with identical ACLs, real service-role write
 identity inserts, enrollment and fee RPCs, patient/clinic RLS isolation, browser
 secret/write/backend-store denial, and inherited access rejection with atomic ACL
 rollback. Policies, owners, RLS flags and defaults remain unchanged. The catalog
-diagnostic also executes successfully. Hosted Supabase validation remains pending.
+diagnostic also executes successfully. The observed ACL pattern is additionally
+tested with unchanged default ACLs and denied TRUNCATE under both browser roles.
+Hosted application-level validation remains pending; only its catalogs were read.
