@@ -2,6 +2,7 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  NotFoundException,
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import type { AuthenticatedRequest } from '../auth/authenticated-request';
@@ -184,6 +185,185 @@ export class RecordsService {
       record_pda: record.record_pda,
       content_hash: account?.contentHash
         ? Buffer.from(account.contentHash).toString('hex')
+        : null,
+    };
+  }
+
+  /**
+   * One record's metadata for an authorized reader: the patient owner, the
+   * issuing doctor, or a doctor whose approved request still covers it.
+   * Metadata only — opening the file goes through `/keys/release`.
+   */
+  async get(request: AuthenticatedRequest, recordId: string) {
+    const record = await this.repository.findRecord(recordId);
+    if (!record) throw new NotFoundException('Record not found');
+    if (request.user.role === 'patient') {
+      if (record.patient_user_id !== request.user.id)
+        throw new ForbiddenException('Not your record');
+      return this.toMeta(record, null, 'Vos');
+    }
+    const doctor = await this.repository.doctor(request);
+    if (record.issuer_doctor_id === doctor.id) {
+      const names = await this.repository.userNames([record.patient_user_id]);
+      return this.toMeta(record, null, names.get(record.patient_user_id));
+    }
+    const covering = await this.coveringRequest(doctor, record);
+    if (!covering)
+      throw new ForbiddenException('No active access grant for this record');
+    const names = await this.repository.userNames([record.patient_user_id]);
+    return this.toMeta(record, covering, names.get(record.patient_user_id));
+  }
+
+  /** The approved request still covering this record for the doctor — on the
+   * DB window AND on-chain: a revoked grant is denied even if the off-chain
+   * row still looks live. */
+  private async coveringRequest(
+    doctor: { id: string; wallet: string },
+    record: { id: string; record_pda: string | null },
+  ) {
+    const sent = await this.repository.sentRequests(doctor.id);
+    const now = new Date();
+    const covering =
+      sent.find(
+        (r) =>
+          r.status === 'approved' &&
+          r.record_ids.includes(record.id) &&
+          r.granted_expires_at !== null &&
+          new Date(r.granted_expires_at) > now,
+      ) ?? null;
+    if (!covering || !record.record_pda) return covering;
+    const status = await this.grantStatuses([record.record_pda], doctor.wallet);
+    return status[0] === 'active' ? covering : null;
+  }
+
+  /** The chain, not access_requests, says whether a grant still reads:
+   * revoke_access and expiry never touch the off-chain row. */
+  private async grantStatuses(
+    recordPdas: string[],
+    doctorWallet: string,
+  ): Promise<('missing' | 'revoked' | 'expired' | 'active' | 'unknown')[]> {
+    if (recordPdas.length === 0) return [];
+    const doctor = new PublicKey(doctorWallet);
+    const pdas = recordPdas.map((pda) =>
+      pda ? this.solana.grantPda(new PublicKey(pda), doctor) : doctor,
+    );
+    const now = Math.floor(Date.now() / 1000);
+    try {
+      const accounts = (await this.solana.program.account[
+        'accessGrant'
+      ].fetchMultiple(pdas)) as ({
+        status: Record<string, unknown>;
+        expiresAt: { toNumber(): number };
+      } | null)[];
+      return accounts.map((grant) => {
+        if (!grant) return 'missing';
+        if ('revoked' in grant.status) return 'revoked';
+        return grant.expiresAt.toNumber() <= now ? 'expired' : 'active';
+      });
+    } catch {
+      return pdas.map(() => 'unknown');
+    }
+  }
+
+  /**
+   * The doctor's working set: their sent requests plus every record they can
+   * open — issued by them, or covered by an approved request whose grant has
+   * not expired. Patient names resolved from `app_user`.
+   */
+  async listForDoctor(request: AuthenticatedRequest) {
+    const doctor = await this.repository.doctor(request);
+    const [issued, sent] = await Promise.all([
+      this.repository.issuedRecords(doctor.id),
+      this.repository.sentRequests(doctor.id),
+    ]);
+    const now = new Date();
+    const live = sent.filter(
+      (r) =>
+        r.status === 'approved' &&
+        r.granted_expires_at !== null &&
+        new Date(r.granted_expires_at) > now,
+    );
+    const grantedIds = [...new Set(live.flatMap((r) => r.record_ids))];
+    const covered = await this.repository.recordsByIds(grantedIds);
+    // The chain is the grant's source of truth: revoked or expired grants
+    // drop out of the list even if the off-chain window looks open.
+    const statuses = await this.grantStatuses(
+      covered.map((r) => r.record_pda ?? ''),
+      doctor.wallet,
+    );
+    const granted = covered.filter(
+      (r, i) => statuses[i] === 'active' && r.issuer_doctor_id !== doctor.id,
+    );
+    const patientIds = [
+      ...new Set([
+        ...issued.map((r) => r.patient_user_id),
+        ...granted.map((r) => r.patient_user_id),
+        ...sent.map((r) => r.patient_user_id),
+      ]),
+    ];
+    const names = await this.repository.userNames(patientIds);
+    const expiryByRecord = new Map(
+      live
+        .filter((r) => granted.some((g) => r.record_ids.includes(g.id)))
+        .flatMap((r) => r.record_ids.map((id) => [id, r] as const)),
+    );
+    const all = [...issued, ...granted].sort((a, b) =>
+      b.created_at.localeCompare(a.created_at),
+    );
+    return {
+      records: all.map((r) =>
+        this.toMeta(
+          r,
+          expiryByRecord.get(r.id) ?? null,
+          names.get(r.patient_user_id),
+        ),
+      ),
+      requests: sent.map((r) => ({
+        request_id: r.id,
+        status: r.status,
+        reason: r.reason,
+        created_at: r.created_at,
+        resolved_at: r.resolved_at,
+        granted_expires_at: r.granted_expires_at,
+        patient: names.get(r.patient_user_id) ?? 'Paciente',
+        record_count: r.record_ids.length,
+      })),
+    };
+  }
+
+  private toMeta(
+    record: {
+      id: string;
+      title: string | null;
+      study_date: string | null;
+      origin: 'issued' | 'digitized' | null;
+      issuer_name: string | null;
+      issuer_org: string | null;
+      status: string;
+      created_at: string;
+      record_pda: string | null;
+    },
+    covering: {
+      granted_expires_at: string | null;
+      resolved_at: string | null;
+    } | null,
+    patientName: string | null | undefined,
+  ) {
+    return {
+      id: record.id,
+      title: record.title,
+      study_date: record.study_date,
+      origin: record.origin,
+      issuer_name: record.issuer_name,
+      issuer_org: record.issuer_org,
+      status: record.record_pda ? record.status : 'pending_chain',
+      created_at: record.created_at,
+      patient: patientName ?? 'Paciente',
+      grant: covering
+        ? {
+            granted_at: covering.resolved_at,
+            expires_at: covering.granted_expires_at,
+          }
         : null,
     };
   }

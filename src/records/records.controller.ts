@@ -59,8 +59,18 @@ export class RecordsController {
     return this.records.list(request, query);
   }
 
+  @Get('doctors/me/records')
+  listForDoctor(@Req() request: AuthenticatedRequest) {
+    return this.records.listForDoctor(request);
+  }
+
   @Get('records/:id/chain-hash')
   chainHash(@Req() request: AuthenticatedRequest, @Param('id') id: string) {
     return this.records.chainHash(request, id);
+  }
+
+  @Get('records/:id')
+  get(@Req() request: AuthenticatedRequest, @Param('id') id: string) {
+    return this.records.get(request, id);
   }
 }
