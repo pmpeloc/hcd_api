@@ -13,7 +13,7 @@ pub struct Record {
     /// SHA-256 of the encrypted file. Never medical data itself.
     pub content_hash: [u8; 32],
     /// Opaque pointer to the ciphertext in off-chain storage (no readable path).
-    #[max_len(64)]
+    #[max_len(Record::MAX_STORAGE_REF_LEN)]
     pub storage_ref: String,
     pub status: RecordStatus,
     pub created_at: i64,
@@ -22,6 +22,11 @@ pub struct Record {
     /// When the issuer voids and re-issues a record, points to the voided one.
     pub supersedes: Option<Pubkey>,
     pub bump: u8,
+}
+
+impl Record {
+    pub const SEED: &'static [u8] = b"record";
+    pub const MAX_STORAGE_REF_LEN: usize = 64;
 }
 
 /// Active when issued. The patient can dispute it ("not mine"); the issuer can

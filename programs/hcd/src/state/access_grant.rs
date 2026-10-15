@@ -18,7 +18,13 @@ pub struct AccessGrant {
     pub bump: u8,
 }
 
-/// Revoked grants are kept (not closed) to preserve the audit trail.
+impl AccessGrant {
+    pub const SEED: &'static [u8] = b"grant";
+}
+
+/// Revoked grants are kept (not closed) to preserve the audit trail. One PDA
+/// per (record, doctor): granting again re-activates the same account with a
+/// new expiration and keeps `access_count` (team decision, 2026-10-04).
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace)]
 pub enum GrantStatus {
     Active,

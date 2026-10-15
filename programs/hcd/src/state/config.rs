@@ -13,3 +13,7 @@ pub struct Config {
     pub max_grant_duration_secs: i64,
     pub bump: u8,
 }
+
+impl Config {
+    pub const SEED: &'static [u8] = b"config";
+}

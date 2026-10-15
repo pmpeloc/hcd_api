@@ -15,6 +15,10 @@ pub struct Provider {
     pub bump: u8,
 }
 
+impl Provider {
+    pub const SEED: &'static [u8] = b"provider";
+}
+
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace)]
 pub enum ProviderType {
     Clinic,

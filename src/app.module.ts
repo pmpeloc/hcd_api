@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { AuthModule } from './auth/auth.module';
+import { WalletEnrollmentModule } from './auth/wallet-enrollment.module';
 import { OrganizationsModule } from './organizations/organizations.module';
 import { RecordsModule } from './records/records.module';
 import { AccessModule } from './access/access.module';
@@ -18,6 +19,7 @@ import { CommonModule } from './common/common.module';
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 100 }]),
     CommonModule,
     AuthModule,
+    WalletEnrollmentModule,
     OrganizationsModule,
     RecordsModule,
     AccessModule,

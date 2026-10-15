@@ -5,6 +5,7 @@ builder/fee payer, and the Anchor program that is the source of truth for
 permissions and audit.
 
 - `programs/hcd/` - Anchor program (Rust): accounts, instructions, events.
+  Design and security decisions: [`programs/hcd/README.md`](programs/hcd/README.md).
 - `tests/` - Anchor tests in TypeScript (positive and negative cases).
 - `idl/` - published IDL; `hcd_app` and this API generate their clients from it.
 - `supabase/migrations/` - database schema and RLS (Supabase CLI).
@@ -35,8 +36,52 @@ npm test               # Jest unit tests (src/**/*.spec.ts)
 npm run lint           # ESLint + Prettier
 npm run anchor:build   # build the program (WSL)
 npm run anchor:test    # run tests/ against a local validator
+npm run anchor:test:devnet  # same tests against the deployed devnet program
 npm run anchor:deploy  # deploy to devnet
 ```
+
+## Program on devnet
+
+| | |
+|---|---|
+| Program ID | `8FNP6rs3DQ4h6bqWNeD9meHt5mUNEhcaXbrbJxSJniyd` |
+| Upgrade authority | `6AdUWfFLkpBCHNSsnCLKbEPB8khvGcnFHZczx6zjTdiQ` (also the Config admin) |
+| Config PDA | `7tChRt4bpCXD8PAsREFpW82i4qrxZwXnfqYYmv2p1EZA` |
+| `key_service` | `DmiHb7zTyWhaLtRCXhCTNkM8Ga1G2S36XzCUx1GUH4yG` |
+| Max grant duration | 7 days (604800 s) |
+| IDL | on-chain metadata account, identical to `idl/hcd.json` |
+| Explorer | https://explorer.solana.com/address/8FNP6rs3DQ4h6bqWNeD9meHt5mUNEhcaXbrbJxSJniyd?cluster=devnet |
+
+### Admin scripts
+
+Run from WSL in `hcd_api/`. They sign with the upgrade authority wallet (the
+Config admin) and use `SOLANA_RPC_URL` from `.env` (override with
+`ANCHOR_PROVIDER_URL` / `ANCHOR_WALLET`).
+
+```sh
+# Verify a provider after checking its license off-chain; `false` suspends it
+# (it can no longer issue records, receive grants or have access logged).
+node scripts/set-provider-verified.mts <provider_authority_pubkey> <true|false>
+
+# One-time Config setup (already done on devnet; it cannot run twice).
+node scripts/initialize-config.mts <key_service_pubkey> <max_grant_days>
+
+# Replace the Config, e.g. to rotate a leaked key_service. Pass the current
+# value for anything that should not change.
+node scripts/update-config.mts <admin_pubkey> <key_service_pubkey> <max_grant_days>
+```
+
+`npm run anchor:test:devnet` runs the same suite against the deployed
+program without redeploying (~0.07 SOL per run from the upgrade authority
+wallet). It reads `KEY_SERVICE_SECRET` (the Config's `key_service` must sign
+`issue_record` and `log_access`) and `SOLANA_RPC_URL` (must be a devnet RPC;
+the public one is flaky) from `.env`. The tests that create the Config are
+skipped there because it already exists.
+
+Upgrading needs the upgrade authority wallet with enough devnet SOL: a
+temporary buffer the size of `target/deploy/hcd.so` (~1.6 SOL for 314 KB,
+refunded after the upgrade) plus rent if the program grows. Check with
+`solana rent $(stat -c %s target/deploy/hcd.so) -u devnet`.
 
 ## Architecture notes
 
@@ -49,3 +94,56 @@ npm run anchor:deploy  # deploy to devnet
   `KEY_SERVICE_SECRET` are different keypairs.
 - RLS isolates organizations: reads use a per-request Supabase client with
   the user's token; only the backend writes.
+
+## Wallet and audit migration
+
+`20261005000000_wallet_audit.sql` adds the enrollment wallet address and key
+release audit fields. Only trusted backend enrollment may bind a wallet; the
+column alone does not prove ownership. Doctor lookup still uses doctors.wallet_pubkey.
+
+New releases must specify role and a lowercase SHA-256 DEK fingerprint.
+Third-party releases require a grant and an explicit pending/confirmed/failed
+status; confirmed requires a transaction signature. Patient/issuer releases
+use skipped with no grant or signature. No plaintext key is stored.
+
+Historical rows retain null role/fingerprint. Their default skipped status is
+not evidence of a self-access: readers must treat null role as legacy/unknown.
+The two NOT VALID checks enforce new writes without fabricating historical
+metadata. Updating legacy rows requires supplying verified audit details; only
+validate those checks after a separately reviewed backfill. RLS is unchanged.
+
+The existing bigint release id can be serialized as text for Franco's Memo
+integration; adding a Memo or reserving an id before submission is outside this
+migration. No live database migration is performed by this change.
+
+Regression test (disposable plain PostgreSQL database only, not Supabase):
+`psql -v ON_ERROR_STOP=1 -f supabase/tests/wallet_audit.sql`.
+The test bootstraps minimal auth objects, checks legacy preservation, valid
+releases, invalid audit states, and retained RLS/write restrictions, then rolls
+back. It does not replace integration or cross-organization RLS tests in Supabase.
+
+## Supabase authentication guard
+
+Import `AuthModule` in the consuming module and apply
+`@UseGuards(SupabaseAuthGuard)` to its protected controller or routes. The guard
+is opt-in: exporting it does not automatically protect endpoints. Keys and tx
+integration must apply it before those endpoints are exposed.
+
+On success, `AuthenticatedRequest.user` contains `id`, `role`,
+`organizationId` and `status`. Those values come from `app_user`, not JWT role
+claims. `AuthenticatedRequest.supabase` is a request-local client using the
+user's token for RLS reads. Do not replace it with a service-role client.
+Only the verified token subject is used to find the profile. Wallet enrollment
+and role-specific authorization are separate responsibilities; this guard alone
+does not authorize medical record access or administrative actions.
+
+Required config: `SUPABASE_URL` and `SUPABASE_ANON_KEY`. The guard does not need
+the wallet migration, Privy, or service-role credentials. Responses: 401 for
+missing/invalid credentials; 403 for absent, invalid or suspended profiles;
+503 for auth infrastructure exceptions or profile query errors. No tokens or
+provider error details are logged or returned. Supabase getClaims validates the
+JWT signature and expiration; session revocation behavior follows that API.
+
+`npm test -- --runInBand` tests guard decisions with mocked Supabase responses;
+it does not replace a real Supabase login/RLS integration test. The test command
+uses Node VM modules to load the repository's ESM Nest dependencies.

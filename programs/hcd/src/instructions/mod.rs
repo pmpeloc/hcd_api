@@ -7,6 +7,7 @@ pub mod register_patient;
 pub mod register_provider;
 pub mod revoke_access;
 pub mod set_provider_verified;
+pub mod update_config;
 pub mod void_record;
 
 pub use dispute_record::*;
@@ -18,4 +19,5 @@ pub use register_patient::*;
 pub use register_provider::*;
 pub use revoke_access::*;
 pub use set_provider_verified::*;
+pub use update_config::*;
 pub use void_record::*;
