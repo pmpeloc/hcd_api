@@ -149,7 +149,9 @@ export class TxBuilderService {
           // Config unreadable (RPC hiccup): let the program enforce it.
         }
         tx = await program.methods
-          .grantAccess(doctor, body.args.expires_at)
+          // i64 args must be a BN; bn.js ships without types.
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+          .grantAccess(doctor, new anchor.BN(body.args.expires_at))
           .accountsPartial({
             payer,
             patient: signer,

@@ -422,6 +422,130 @@ export class RecordsRepository {
       throw new ServiceUnavailableException('Record registration failed');
   }
 
+  /** Full metadata row for one record, read with the service role. The
+   * caller performs the ownership/authorization check itself. */
+  async findRecord(recordId: string): Promise<{
+    id: string;
+    patient_user_id: string;
+    issuer_doctor_id: string;
+    organization_id: string;
+    title: string | null;
+    study_date: string | null;
+    origin: 'issued' | 'digitized' | null;
+    issuer_name: string | null;
+    issuer_org: string | null;
+    status: string;
+    created_at: string;
+    record_pda: string | null;
+  } | null> {
+    const db = this.admin.create();
+    const result = await db
+      .from('records')
+      .select(
+        'id, patient_user_id, issuer_doctor_id, organization_id, title, study_date, origin, issuer_name, issuer_org, status, created_at, record_pda',
+      )
+      .eq('id', recordId)
+      .maybeSingle();
+    if (result.error)
+      throw new ServiceUnavailableException('Record lookup failed');
+    return result.data;
+  }
+
+  /** Display names for a set of app_user ids (patients in the doctor's lists). */
+  async userNames(ids: string[]) {
+    if (ids.length === 0) return new Map<string, string | null>();
+    const db = this.admin.create();
+    const result = await db
+      .from('app_user')
+      .select('id, full_name')
+      .in('id', ids);
+    if (result.error)
+      throw new ServiceUnavailableException('User lookup failed');
+    return new Map(
+      ((result.data ?? []) as { id: string; full_name: string | null }[]).map(
+        (row) => [row.id, row.full_name],
+      ),
+    );
+  }
+
+  /** Access requests this doctor sent, newest first. */
+  async sentRequests(doctorId: string) {
+    const db = this.admin.create();
+    const result = await db
+      .from('access_requests')
+      .select(
+        'id, patient_user_id, status, reason, created_at, resolved_at, granted_expires_at, record_ids',
+      )
+      .eq('doctor_id', doctorId)
+      .order('created_at', { ascending: false });
+    if (result.error)
+      throw new ServiceUnavailableException('Access requests unavailable');
+    return (result.data ?? []) as {
+      id: string;
+      patient_user_id: string;
+      status: string;
+      reason: string | null;
+      created_at: string;
+      resolved_at: string | null;
+      granted_expires_at: string | null;
+      record_ids: string[];
+    }[];
+  }
+
+  /** Metadata of the records a list of ids covers, for the doctor's
+   * "Mis accesos" list. */
+  async recordsByIds(ids: string[]) {
+    if (ids.length === 0) return [];
+    const db = this.admin.create();
+    const result = await db
+      .from('records')
+      .select(
+        'id, title, study_date, origin, issuer_name, issuer_org, status, created_at, record_pda, patient_user_id, issuer_doctor_id',
+      )
+      .in('id', ids);
+    if (result.error)
+      throw new ServiceUnavailableException('Records unavailable');
+    return (result.data ?? []) as {
+      id: string;
+      title: string | null;
+      study_date: string | null;
+      origin: 'issued' | 'digitized' | null;
+      issuer_name: string | null;
+      issuer_org: string | null;
+      status: string;
+      created_at: string;
+      record_pda: string | null;
+      patient_user_id: string;
+      issuer_doctor_id: string;
+    }[];
+  }
+
+  /** Records this doctor issued, newest first. */
+  async issuedRecords(doctorId: string) {
+    const db = this.admin.create();
+    const result = await db
+      .from('records')
+      .select(
+        'id, title, study_date, origin, issuer_name, issuer_org, status, created_at, record_pda, patient_user_id',
+      )
+      .eq('issuer_doctor_id', doctorId)
+      .order('created_at', { ascending: false });
+    if (result.error)
+      throw new ServiceUnavailableException('Records unavailable');
+    return (result.data ?? []) as {
+      id: string;
+      title: string | null;
+      study_date: string | null;
+      origin: 'issued' | 'digitized' | null;
+      issuer_name: string | null;
+      issuer_org: string | null;
+      status: string;
+      created_at: string;
+      record_pda: string | null;
+      patient_user_id: string;
+    }[];
+  }
+
   /** Reads one record's identity through the caller's JWT so RLS keeps the
    * row scoped to the patient or their organization. Metadata only. */
   async findPda(request: AuthenticatedRequest, recordId: string) {
