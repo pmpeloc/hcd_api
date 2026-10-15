@@ -424,7 +424,20 @@ export class RecordsRepository {
 
   /** Full metadata row for one record, read with the service role. The
    * caller performs the ownership/authorization check itself. */
-  async findRecord(recordId: string) {
+  async findRecord(recordId: string): Promise<{
+    id: string;
+    patient_user_id: string;
+    issuer_doctor_id: string;
+    organization_id: string;
+    title: string | null;
+    study_date: string | null;
+    origin: 'issued' | 'digitized' | null;
+    issuer_name: string | null;
+    issuer_org: string | null;
+    status: string;
+    created_at: string;
+    record_pda: string | null;
+  } | null> {
     const db = this.admin.create();
     const result = await db
       .from('records')
@@ -435,20 +448,7 @@ export class RecordsRepository {
       .maybeSingle();
     if (result.error)
       throw new ServiceUnavailableException('Record lookup failed');
-    return result.data as {
-      id: string;
-      patient_user_id: string;
-      issuer_doctor_id: string;
-      organization_id: string;
-      title: string | null;
-      study_date: string | null;
-      origin: 'issued' | 'digitized' | null;
-      issuer_name: string | null;
-      issuer_org: string | null;
-      status: string;
-      created_at: string;
-      record_pda: string | null;
-    } | null;
+    return result.data;
   }
 
   /** Display names for a set of app_user ids (patients in the doctor's lists). */

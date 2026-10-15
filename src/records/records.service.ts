@@ -232,10 +232,7 @@ export class RecordsService {
           new Date(r.granted_expires_at) > now,
       ) ?? null;
     if (!covering || !record.record_pda) return covering;
-    const status = await this.grantStatuses(
-      [record.record_pda],
-      doctor.wallet,
-    );
+    const status = await this.grantStatuses([record.record_pda], doctor.wallet);
     return status[0] === 'active' ? covering : null;
   }
 
@@ -248,9 +245,7 @@ export class RecordsService {
     if (recordPdas.length === 0) return [];
     const doctor = new PublicKey(doctorWallet);
     const pdas = recordPdas.map((pda) =>
-      pda
-        ? this.solana.grantPda(new PublicKey(pda), doctor)
-        : doctor,
+      pda ? this.solana.grantPda(new PublicKey(pda), doctor) : doctor,
     );
     const now = Math.floor(Date.now() / 1000);
     try {
@@ -310,9 +305,7 @@ export class RecordsService {
     const expiryByRecord = new Map(
       live
         .filter((r) => granted.some((g) => r.record_ids.includes(g.id)))
-        .flatMap((r) =>
-          r.record_ids.map((id) => [id, r] as const),
-        ),
+        .flatMap((r) => r.record_ids.map((id) => [id, r] as const)),
     );
     const all = [...issued, ...granted].sort((a, b) =>
       b.created_at.localeCompare(a.created_at),
@@ -350,7 +343,10 @@ export class RecordsService {
       created_at: string;
       record_pda: string | null;
     },
-    covering: { granted_expires_at: string | null; resolved_at: string | null } | null,
+    covering: {
+      granted_expires_at: string | null;
+      resolved_at: string | null;
+    } | null,
     patientName: string | null | undefined,
   ) {
     return {
